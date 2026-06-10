@@ -72,6 +72,12 @@ async function initAudio() {
   // iOS Safariはsuspended状態で生成されることがあり、resumeしないと
   // currentTimeが進まず進行が止まる（ジェスチャー内で呼ぶこと）
   if (audioCtx.state === "suspended") audioCtx.resume();
+  // ジェスチャー内で無音を即再生してiOSの音声を確実にアンロックする
+  // （この後のデコードはawaitでジェスチャー外になるため、ここでやるしかない）
+  const unlock = audioCtx.createBufferSource();
+  unlock.buffer = audioCtx.createBuffer(1, 1, 22050);
+  unlock.connect(audioCtx.destination);
+  unlock.start(0);
   for (const name of ["saburo", "haihai"]) {
     buffers[name] = await audioCtx.decodeAudioData(base64ToArrayBuffer(AUDIO_DATA[name]));
   }
@@ -172,6 +178,9 @@ let round = null;
 
 async function startRound() {
   await initAudio();
+  if (audioCtx.state === "suspended") {
+    try { await audioCtx.resume(); } catch (e) { /* 次のタップのensureAudioRunningで復帰 */ }
+  }
   G.diff = DIFFICULTIES[G.difficulty];
   G.chars = makeChars();
   G.mode = "intro";
@@ -416,6 +425,8 @@ function update() {
 
 function loop(ts) {
   if (audioCtx) G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
+  // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる
+  G.audioStalled = !!(audioCtx && audioCtx.state === "suspended" && G.mode !== "title");
   update();
   render(G, ts / 1000);
   requestAnimationFrame(loop);
@@ -566,7 +577,13 @@ canvas.addEventListener("touchstart", (e) => {
 
 // デスクトップでもタイトル・リザルトはクリック可能にする（プレイ中の誤クリックは無視）
 canvas.addEventListener("mousedown", (e) => {
+  ensureAudioRunning();
   handleTapUI(canvasPos(e));
+});
+
+// タブ復帰時にiOSが音声を止めたままにする場合がある
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) ensureAudioRunning();
 });
 
 requestAnimationFrame(loop);

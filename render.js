@@ -809,4 +809,17 @@ function render(G, now) {
 
   if (G.mode === "intro") drawIntro(G);
   if (G.mode === "gameover") drawGameOver(G);
+
+  // 音声時計が止まっている（iOSのsuspended）ときはタップを促す
+  if (G.audioStalled && G.mode !== "gameover") {
+    ctx.fillStyle = "rgba(15, 13, 22, 0.6)";
+    ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd95e";
+    ctx.font = F(26, 800);
+    ctx.fillText("音が止まっています", 240, 380);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = F(18);
+    ctx.fillText("画面をタップしてね", 240, 420);
+  }
 }
