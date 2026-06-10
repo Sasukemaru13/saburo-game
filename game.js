@@ -199,6 +199,7 @@ async function startRound() {
     interval,
     beats: 0,            // テンポアップ判定用の通し拍数
     consec: [0, 0, 0, 0], // 同時指しの連続回数
+    doubleBonusUsed: false, // 2人指しの2点ボーナスはラウンド中1回だけ
     phaseT: t0,          // 描画用ビート位相の基準時刻
     pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
     event: { type: "point", t: t0 + FIRST_BEAT * interval, actor: 0 },
@@ -281,8 +282,12 @@ function doPoint(actor, targets) {
   playVoice("saburo", G.chars[actor].pitch);
   G.chars[actor].anim = { type: "point", targets, start: now, until: now + round.interval * 0.8 };
 
-  // 同時指しはハイリスクなぶん +2拍
-  const gain = actor === 0 && targets.length === 2 ? 2 : 1;
+  // 同時指しのボーナスは最初の1回だけ2点（2回目以降は1点）
+  let gain = 1;
+  if (actor === 0 && targets.length === 2 && !round.doubleBonusUsed) {
+    gain = 2;
+    round.doubleBonusUsed = true;
+  }
   G.score += gain;
   addPopup(actor, gain);
   maybeRamp();

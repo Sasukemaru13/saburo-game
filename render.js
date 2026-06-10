@@ -552,13 +552,13 @@ function drawHUD(G) {
   const numText = String(G.score);
   const numW = ctx.measureText(numText).width;
   ctx.font = F(26, 800);
-  const unitW = ctx.measureText("拍").width;
+  const unitW = ctx.measureText("点").width;
   const x0 = 240 - (numW + 10 + unitW) / 2;
   ctx.font = F(68, 800);
   ctx.fillText(numText, x0, 96);
   ctx.font = F(26, 800);
   ctx.fillStyle = "#c5cce6";
-  ctx.fillText("拍", x0 + numW + 10, 96);
+  ctx.fillText("点", x0 + numW + 10, 96);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
@@ -567,15 +567,15 @@ function drawHUD(G) {
   ctx.textAlign = "left";
   ctx.fillText(`${G.diff.label}　BPM ${G.bpmNow}`, 14, 24);
   ctx.textAlign = "right";
-  ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, W - 14, 24);
+  ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, W - 14, 24);
 
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
   ctx.font = F(12);
   ctx.fillText(
     IS_TOUCH
-      ? "タップ: 指差し　2本同時: 2人指し(+2拍)　手元タップ: ハイハイ"
-      : "A:左　W:正面　D:右　2キー同時=2人指し(+2拍)　Space:ハイハイ",
+      ? "タップ: 指差し　2本同時: 2人指し　手元タップ: ハイハイ"
+      : "A:左　W:正面　D:右　2キー同時=2人指し　Space:ハイハイ",
     240, 793
   );
 }
@@ -603,16 +603,18 @@ function drawTitle(G, now) {
     ? [
         "リズムに乗って「三郎」と指を差し合う。",
         "指されたら次の拍で誰かをタップして指差す。",
-        "2人を同時タップで2人指し: 成功すると +2拍。",
         "同時指しされたら手元をタップで「ハイハイ」。",
-        "CPUはミスしない。きみが外すまで何拍続く？",
+        "1拍さばくごとに 1点。",
+        "2人同時タップの2人指しは、最初の1回だけ 2点。",
+        "CPUはミスしない。何点まで伸ばせる？",
       ]
     : [
         "リズムに乗って「三郎」と指を差し合う。",
         "指されたら次の拍で A(左) / W(正面) / D(右)。",
-        "2キー同時押しで2人指し: 成功すると +2拍。",
         "同時指しされたら Space で「ハイハイ」。",
-        "CPUはミスしない。きみが外すまで何拍続く？",
+        "1拍さばくごとに 1点。",
+        "2キー同時押しの2人指しは、最初の1回だけ 2点。",
+        "CPUはミスしない。何点まで伸ばせる？",
       ];
   lines.forEach((t, i) => ctx.fillText(t, 240, 240 + i * 24));
 
@@ -637,7 +639,7 @@ function drawTitle(G, now) {
     ctx.fillStyle = sel ? "rgba(40,30,0,0.75)" : "#9aa3c0";
     ctx.fillText(`BPM ${d.bpm}〜 上限なし`, 92, y + 54);
     ctx.textAlign = "right";
-    ctx.fillText(`ベスト ${G.bests[k]} 拍`, 388, y + 54);
+    ctx.fillText(`ベスト ${G.bests[k]} 点`, 388, y + 54);
   });
 
   ctx.textAlign = "center";
@@ -674,7 +676,7 @@ function drawGameOver(G) {
 
   ctx.fillStyle = "#fff";
   ctx.font = F(60, 800);
-  ctx.fillText(`${G.score} 拍`, 240, 398);
+  ctx.fillText(`${G.score} 点`, 240, 398);
 
   if (G.newBest) {
     ctx.fillStyle = "#ffd95e";
@@ -683,7 +685,7 @@ function drawGameOver(G) {
   } else {
     ctx.fillStyle = "#9aa3c0";
     ctx.font = F(15);
-    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, 240, 438);
+    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, 240, 438);
   }
 
   // もう一度（タップ/Rキー）。当たり判定は game.js の handleTapUI と揃えること
