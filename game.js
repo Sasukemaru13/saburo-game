@@ -83,19 +83,6 @@ async function initAudio() {
   }
   clapBuffer = makeClapBuffer();
   tickBuffer = makeTickBuffer();
-
-  // Bluetooth等の出力デバイスが無音で省電力ゲートに入ると短い音の頭が欠けて
-  // 音量がばらついて聞こえる。極小ノイズを流し続けてデバイスを起こしておく
-  const keep = audioCtx.createBufferSource();
-  const kb = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
-  const kd = kb.getChannelData(0);
-  for (let i = 0; i < kd.length; i++) kd[i] = Math.random() * 2 - 1;
-  keep.buffer = kb;
-  keep.loop = true;
-  const kg = audioCtx.createGain();
-  kg.gain.value = 0.0008; // 約-62dB。耳には聞こえないがデバイスは起き続ける
-  keep.connect(kg).connect(audioCtx.destination);
-  keep.start();
 }
 
 // 手拍子は毎回生成すると音量がばらつくので、1回だけ作ってピークを揃えて使い回す
