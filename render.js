@@ -237,16 +237,10 @@ function drawCpu(G, idx, now) {
     ctx.lineTo(x + 13 * s + fs, headY - 2 * s);
     ctx.stroke();
   } else {
-    // 斜め顔は外側の目を少し小さくして立体感を出す
-    const inner = 3.2 * s;
-    const outer = fdir === 0 ? 3.2 * s : 2.6 * s;
-    const leftR = fdir === 1 ? outer : inner;
-    const rightR = fdir === -1 ? outer : inner;
+    // 両目は同じ大きさ（外側を小さくする表現は不揃いに見えるためやめた）
     ctx.beginPath();
-    ctx.arc(x - 9 * s + fs, headY - 2 * s, leftR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(x + 9 * s + fs, headY - 2 * s, rightR, 0, Math.PI * 2);
+    ctx.arc(x - 9 * s + fs, headY - 2 * s, 3.2 * s, 0, Math.PI * 2);
+    ctx.arc(x + 9 * s + fs, headY - 2 * s, 3.2 * s, 0, Math.PI * 2);
     ctx.fill();
   }
   // ほっぺ

@@ -75,7 +75,7 @@ async function initAudio() {
   // ジェスチャー内で無音を即再生してiOSの音声を確実にアンロックする
   // （この後のデコードはawaitでジェスチャー外になるため、ここでやるしかない）
   const unlock = audioCtx.createBufferSource();
-  unlock.buffer = audioCtx.createBuffer(1, 1, 22050);
+  unlock.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
   unlock.connect(audioCtx.destination);
   unlock.start(0);
   for (const name of ["saburo", "haihai"]) {
@@ -446,10 +446,27 @@ function update() {
   }
 }
 
+let lastClockValue = -1;
+let lastClockMoveTs = 0;
+
 function loop(ts) {
-  if (audioCtx) G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
+  if (audioCtx) {
+    G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
+    // iOS既知バグの見張り: stateがrunningのまま時計が0.4秒以上進まないなら壊れている
+    if (G.mode !== "title") {
+      if (G.now !== lastClockValue) {
+        lastClockValue = G.now;
+        lastClockMoveTs = ts;
+        G.clockStuck = false;
+      } else if (audioCtx.state === "running" && ts - lastClockMoveTs > 400) {
+        G.clockStuck = true;
+      }
+    } else {
+      G.clockStuck = false;
+    }
+  }
   // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる
-  G.audioStalled = !!(audioCtx && audioCtx.state !== "running" && G.mode !== "title");
+  G.audioStalled = !!(audioCtx && G.mode !== "title" && (audioCtx.state !== "running" || G.clockStuck));
   update();
   render(G, ts / 1000);
   requestAnimationFrame(loop);
@@ -459,8 +476,30 @@ function loop(ts) {
 
 // タブ切替などでiOSが音声を止めた場合の復帰（進行は音声時計基準なので必須）
 // suspendedだけでなくinterrupted等もまとめて起こす
+let resettingAudio = false;
+
 function ensureAudioRunning() {
-  if (audioCtx && audioCtx.state !== "running") audioCtx.resume().catch(() => {});
+  if (!audioCtx) return;
+  // iOS既知バグ: stateはrunningなのに時計が進まない。resumeでは直らないので作り直す
+  if (G.clockStuck && !resettingAudio) {
+    hardResetAudio();
+    return;
+  }
+  if (audioCtx.state !== "running") audioCtx.resume().catch(() => {});
+}
+
+// 壊れたAudioContextを破棄して作り直し、ラウンドを最初からやり直す
+// （タップのジェスチャー内から呼ばれる前提）
+async function hardResetAudio() {
+  resettingAudio = true;
+  G.clockStuck = false;
+  try { audioCtx.close(); } catch (e) { /* 既にclosedでも構わない */ }
+  audioCtx = null;
+  try {
+    await startRound();
+  } finally {
+    resettingAudio = false;
+  }
 }
 
 // 指差し入力（target: 1=左 2=正面 3=右）
