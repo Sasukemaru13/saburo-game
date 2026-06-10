@@ -418,7 +418,36 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
-// ---------- 入力 ----------
+// ---------- 入力（キーボード・タッチ共通ロジック） ----------
+
+// 指差し入力（target: 1=左 2=正面 3=右）
+function handlePointInput(target, t) {
+  const ev = round.event;
+  // イントロ中の早すぎる入力は無視（手拍子につられた分は許す）
+  if (G.mode === "intro" && t < ev.t - winNow()) return;
+
+  if (ev.type === "point" && ev.actor === 0) {
+    if (round.pendingKeys) {
+      if (!round.pendingKeys.keys.includes(target)) round.pendingKeys.keys.push(target);
+    } else {
+      round.pendingKeys = { keys: [target], t };
+      setTimeout(resolvePlayerPoint, 60); // 同時押し猶予
+    }
+  } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
+    gameOver("今はハイハイのタイミング！");
+  } else if (G.mode === "play") {
+    gameOver("自分の番じゃないのに指差した！");
+  }
+}
+
+function handleHaihaiInput(t) {
+  const ev = round.event;
+  if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
+    resolvePlayerHaihai(t);
+  } else if (G.mode === "play") {
+    gameOver("今はハイハイじゃない！");
+  }
+}
 
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
@@ -440,36 +469,94 @@ window.addEventListener("keydown", (e) => {
 
   if (!audioCtx || !round) return;
   const t = audioCtx.currentTime;
-  const ev = round.event;
 
   if (key in KEY_TARGET) {
-    // イントロ中の早すぎる入力は無視（手拍子につられた分は許す）
-    if (G.mode === "intro" && t < round.event.t - winNow()) return;
-
-    if (ev.type === "point" && ev.actor === 0) {
-      const target = KEY_TARGET[key];
-      if (round.pendingKeys) {
-        if (!round.pendingKeys.keys.includes(target)) round.pendingKeys.keys.push(target);
-      } else {
-        round.pendingKeys = { keys: [target], t };
-        setTimeout(resolvePlayerPoint, 60); // 同時押し猶予
-      }
-    } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
-      gameOver("ハイハイはSpaceキー！");
-    } else if (G.mode === "play") {
-      gameOver("自分の番じゃないのに指差した！");
-    }
+    handlePointInput(KEY_TARGET[key], t);
     return;
   }
-
   if (key === " ") {
     e.preventDefault();
-    if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
-      resolvePlayerHaihai(t);
-    } else if (G.mode === "play") {
-      gameOver("今はハイハイじゃない！");
+    handleHaihaiInput(t);
+  }
+});
+
+// ---------- タッチ入力（スマホ） ----------
+
+function canvasPos(touch) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (touch.clientX - rect.left) * (W / rect.width),
+    y: (touch.clientY - rect.top) * (H / rect.height),
+  };
+}
+
+function inRect(p, x, y, w, h) {
+  return p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h;
+}
+
+// タップ位置 → 対象。CPU3人は当たり判定が重なる場所があるので一番近い人を採る
+function hitZone(p) {
+  let best = null;
+  let bestD = 1;
+  for (let i = 1; i <= 3; i++) {
+    const dx = (p.x - CPU_POS[i].x) / 85;
+    const dy = (p.y - (CPU_POS[i].y + 15)) / 115;
+    const d = Math.hypot(dx, dy);
+    if (d < 1 && d < bestD) {
+      best = i;
+      bestD = d;
     }
   }
+  if (best !== null) return best;
+  if (p.y > 630) return "haihai"; // 画面下の手元エリア
+  return null;
+}
+
+function hitDifficulty(p) {
+  const keys = Object.keys(DIFFICULTIES);
+  for (let i = 0; i < keys.length; i++) {
+    if (inRect(p, 70, 400 + i * 86, 340, 70)) return keys[i];
+  }
+  return null;
+}
+
+function handleTapUI(pos) {
+  if (G.mode === "title") {
+    const card = hitDifficulty(pos);
+    if (card) {
+      G.difficulty = card;
+    } else {
+      startRound();
+    }
+    return true;
+  }
+  if (G.mode === "gameover") {
+    if (inRect(pos, 120, 462, 240, 52)) startRound();
+    else if (inRect(pos, 160, 524, 160, 34)) G.mode = "title";
+    return true;
+  }
+  return false;
+}
+
+canvas.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  const touches = Array.from(e.changedTouches).map(canvasPos);
+  if (touches.length === 0) return;
+  if (handleTapUI(touches[0])) return;
+
+  if (!audioCtx || !round) return;
+  const t = audioCtx.currentTime;
+  for (const pos of touches) {
+    const z = hitZone(pos);
+    if (z === null) continue; // 何もない場所のタップは指が滑っただけとみなす
+    if (z === "haihai") handleHaihaiInput(t);
+    else handlePointInput(z, t);
+  }
+}, { passive: false });
+
+// デスクトップでもタイトル・リザルトはクリック可能にする（プレイ中の誤クリックは無視）
+canvas.addEventListener("mousedown", (e) => {
+  handleTapUI(canvasPos(e));
 });
 
 requestAnimationFrame(loop);

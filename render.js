@@ -22,6 +22,8 @@ function F(size, weight = 700) {
   return `${weight} ${Math.round(size)}px ${FX.font ? FONT_FAMILY : "sans-serif"}`;
 }
 
+const IS_TOUCH = "ontouchstart" in window;
+
 // CPUの座席（1=左 2=正面奥 3=右）。s は奥行きスケール
 const CPU_POS = {
   1: { x: 100, y: 415, s: 1.18 },
@@ -570,7 +572,12 @@ function drawHUD(G) {
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
   ctx.font = F(12);
-  ctx.fillText("A:左　W:正面　D:右　2キー同時=2人指し(+2拍)　Space:ハイハイ", 240, 793);
+  ctx.fillText(
+    IS_TOUCH
+      ? "タップ: 指差し　2本同時: 2人指し(+2拍)　手元タップ: ハイハイ"
+      : "A:左　W:正面　D:右　2キー同時=2人指し(+2拍)　Space:ハイハイ",
+    240, 793
+  );
 }
 
 // ---------- 画面 ----------
@@ -628,7 +635,12 @@ function drawTitle(G, now) {
   ctx.textAlign = "center";
   ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
   ctx.font = F(18, 800);
-  ctx.fillText("1 / 2 / 3 で難易度 — 好きなキーでスタート", 240, 720);
+  ctx.fillText(
+    IS_TOUCH
+      ? "カードで難易度 — ほかをタップでスタート"
+      : "1 / 2 / 3 で難易度 — 好きなキーでスタート",
+    240, 720
+  );
 }
 
 function drawGameOver(G) {
@@ -638,36 +650,45 @@ function drawGameOver(G) {
   ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
   ctx.shadowColor = "rgba(0,0,0,0.6)";
   ctx.shadowBlur = 30;
-  rrect(50, 230, 380, 320, 20);
+  rrect(50, 225, 380, 350, 20);
   ctx.fill();
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
   ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "#e8554d";
-  ctx.font = F(34, 800);
-  ctx.fillText("リズムが止まった！", 240, 292);
+  ctx.font = F(32, 800);
+  ctx.fillText("リズムが止まった！", 240, 284);
   ctx.fillStyle = "#c5cce6";
-  ctx.font = F(16);
-  ctx.fillText(G.loseReason, 240, 326);
+  ctx.font = F(15);
+  ctx.fillText(G.loseReason, 240, 316);
 
   ctx.fillStyle = "#fff";
-  ctx.font = F(64, 800);
-  ctx.fillText(`${G.score} 拍`, 240, 420);
+  ctx.font = F(60, 800);
+  ctx.fillText(`${G.score} 拍`, 240, 398);
 
   if (G.newBest) {
     ctx.fillStyle = "#ffd95e";
     ctx.font = F(22, 800);
-    ctx.fillText("ベスト更新！", 240, 460);
+    ctx.fillText("ベスト更新！", 240, 438);
   } else {
     ctx.fillStyle = "#9aa3c0";
-    ctx.font = F(16);
-    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, 240, 460);
+    ctx.font = F(15);
+    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, 240, 438);
   }
 
+  // もう一度（タップ/Rキー）。当たり判定は game.js の handleTapUI と揃えること
   ctx.fillStyle = "#ffd95e";
-  ctx.font = F(19, 800);
-  ctx.fillText("R: もう一度　/　T: タイトルへ", 240, 520);
+  rrect(120, 462, 240, 52, 16);
+  ctx.fill();
+  ctx.fillStyle = "#2a2520";
+  ctx.font = F(21, 800);
+  ctx.fillText(IS_TOUCH ? "もう一度" : "もう一度 (R)", 240, 496);
+
+  ctx.fillStyle = "#9aa3c0";
+  ctx.font = F(15);
+  ctx.fillText(IS_TOUCH ? "タイトルへ" : "タイトルへ (T)", 240, 546);
 }
 
 function drawIntro(G) {
