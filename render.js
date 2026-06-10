@@ -6,6 +6,22 @@ const ctx = canvas.getContext("2d");
 const W = canvas.width;   // 480
 const H = canvas.height;  // 800
 
+// リッチ化エフェクトのON/OFF。気に入らない項目は false にすれば個別に元へ戻せる
+const FX = {
+  font: true,       // 丸ゴシックWebフォント
+  overshoot: true,  // 手のオーバーシュート（行き過ぎて戻る）
+  beatBounce: true, // 拍に合わせて全員ピョンと跳ねる
+  squash: true,     // 指す側が伸びる・指された側がビクッと縮む
+  shake: true,      // 自分が指された瞬間の画面シェイク
+  scorePopup: true, // +1/+2のポップアップ
+  speedupFx: true,  // テンポアップの演出と効果音
+};
+
+const FONT_FAMILY = "'M PLUS Rounded 1c', sans-serif";
+function F(size, weight = 700) {
+  return `${weight} ${Math.round(size)}px ${FX.font ? FONT_FAMILY : "sans-serif"}`;
+}
+
 // CPUの座席（1=左 2=正面奥 3=右）。s は奥行きスケール
 const CPU_POS = {
   1: { x: 100, y: 415, s: 1.18 },
@@ -38,7 +54,7 @@ function rrect(x, y, w, h, r) {
 }
 
 function drawBubble(x, y, text, scale = 1) {
-  ctx.font = `bold ${Math.round(20 * scale)}px sans-serif`;
+  ctx.font = F(20 * scale, 800);
   const tw = ctx.measureText(text).width;
   const bw = tw + 26 * scale;
   const bh = 34 * scale;
@@ -211,7 +227,7 @@ function drawCpu(G, idx, now) {
   }
 
   // 名前プレート
-  ctx.font = `bold ${Math.round(14 * s)}px sans-serif`;
+  ctx.font = F(14 * s, 800);
   const nw = ctx.measureText(c.name).width + 18 * s;
   ctx.fillStyle = "rgba(0,0,0,0.45)";
   rrect(x - nw / 2, y + 100 * s, nw, 22 * s, 11 * s);
@@ -300,7 +316,7 @@ function drawPlayerHands(G, now) {
   if (G.mode === "play" && G.turnActor === 0 && (!anim || anim.type !== "point")) {
     const a = 0.65 + 0.35 * Math.sin(now * 8);
     ctx.fillStyle = `rgba(255, 217, 94, ${a})`;
-    ctx.font = "bold 26px sans-serif";
+    ctx.font = F(26, 800);
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
     ctx.fillText("きみの番！", 240, 660);
@@ -484,14 +500,14 @@ function drawHUD(G) {
   // スコア
   ctx.textAlign = "center";
   ctx.fillStyle = "#fff";
-  ctx.font = "bold 44px sans-serif";
+  ctx.font = F(44, 800);
   ctx.shadowColor = "rgba(0,0,0,0.5)";
   ctx.shadowBlur = 6;
   ctx.fillText(`${G.score} 拍`, 240, 56);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
-  ctx.font = "13px sans-serif";
+  ctx.font = F(13);
   ctx.fillStyle = "#9aa3c0";
   ctx.textAlign = "left";
   ctx.fillText(`${G.diff.label}　BPM ${G.bpmNow}`, 14, 24);
@@ -500,7 +516,7 @@ function drawHUD(G) {
 
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
-  ctx.font = "12px sans-serif";
+  ctx.font = F(12);
   ctx.fillText("A:左　W:正面　D:右　2キー同時=2人指し(+2拍)　Space:ハイハイ", 240, 793);
 }
 
@@ -514,15 +530,15 @@ function drawTitle(G, now) {
   ctx.fillStyle = "#ffd95e";
   ctx.shadowColor = "rgba(255, 180, 60, 0.6)";
   ctx.shadowBlur = 24;
-  ctx.font = "bold 78px sans-serif";
+  ctx.font = F(78, 800);
   ctx.fillText("三郎", 240, 140);
-  ctx.font = "bold 34px sans-serif";
+  ctx.font = F(34, 800);
   ctx.fillText("ゲーム", 240, 188);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
   ctx.fillStyle = "#c5cce6";
-  ctx.font = "14px sans-serif";
+  ctx.font = F(14);
   const lines = [
     "リズムに乗って「三郎」と指を差し合う。",
     "指されたら次の拍で A(左) / W(正面) / D(右)。",
@@ -546,10 +562,10 @@ function drawTitle(G, now) {
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
     ctx.fillStyle = sel ? "#222" : "#e8e4f5";
-    ctx.font = "bold 22px sans-serif";
+    ctx.font = F(22, 800);
     ctx.textAlign = "left";
     ctx.fillText(`${i + 1}. ${d.label}`, 92, y + 30);
-    ctx.font = "13px sans-serif";
+    ctx.font = F(13);
     ctx.fillStyle = sel ? "rgba(40,30,0,0.75)" : "#9aa3c0";
     ctx.fillText(`BPM ${d.bpm}〜 上限なし`, 92, y + 54);
     ctx.textAlign = "right";
@@ -558,7 +574,7 @@ function drawTitle(G, now) {
 
   ctx.textAlign = "center";
   ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
-  ctx.font = "bold 18px sans-serif";
+  ctx.font = F(18, 800);
   ctx.fillText("1 / 2 / 3 で難易度 — 好きなキーでスタート", 240, 720);
 }
 
@@ -576,34 +592,34 @@ function drawGameOver(G) {
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#e8554d";
-  ctx.font = "bold 34px sans-serif";
+  ctx.font = F(34, 800);
   ctx.fillText("リズムが止まった！", 240, 292);
   ctx.fillStyle = "#c5cce6";
-  ctx.font = "16px sans-serif";
+  ctx.font = F(16);
   ctx.fillText(G.loseReason, 240, 326);
 
   ctx.fillStyle = "#fff";
-  ctx.font = "bold 64px sans-serif";
+  ctx.font = F(64, 800);
   ctx.fillText(`${G.score} 拍`, 240, 420);
 
   if (G.newBest) {
     ctx.fillStyle = "#ffd95e";
-    ctx.font = "bold 22px sans-serif";
+    ctx.font = F(22, 800);
     ctx.fillText("ベスト更新！", 240, 460);
   } else {
     ctx.fillStyle = "#9aa3c0";
-    ctx.font = "16px sans-serif";
+    ctx.font = F(16);
     ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, 240, 460);
   }
 
   ctx.fillStyle = "#ffd95e";
-  ctx.font = "bold 19px sans-serif";
+  ctx.font = F(19, 800);
   ctx.fillText("R: もう一度　/　T: タイトルへ", 240, 520);
 }
 
 function drawIntro(G) {
   ctx.fillStyle = "#ffd95e";
-  ctx.font = "bold 32px sans-serif";
+  ctx.font = F(32, 800);
   ctx.textAlign = "center";
   ctx.shadowColor = "rgba(0,0,0,0.6)";
   ctx.shadowBlur = 8;
