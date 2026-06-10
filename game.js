@@ -176,11 +176,18 @@ function playBuzzer() {
 
 let round = null;
 
+let startingRound = false;
+
 async function startRound() {
-  await initAudio();
-  if (audioCtx.state === "suspended") {
-    try { await audioCtx.resume(); } catch (e) { /* 次のタップのensureAudioRunningで復帰 */ }
+  if (startingRound) return; // 連打・タップとキーの二重スタート防止
+  startingRound = true;
+  try {
+    await initAudio();
+  } finally {
+    startingRound = false;
   }
+  if (audioCtx.state !== "running") audioCtx.resume().catch(() => {});
+
   G.diff = DIFFICULTIES[G.difficulty];
   G.chars = makeChars();
   G.mode = "intro";
@@ -192,19 +199,28 @@ async function startRound() {
   G.popups = [];
   G.speedupAt = 0;
 
-  const interval = 60 / G.diff.bpm;
-  const t0 = audioCtx.currentTime + 0.5;
   round = {
-    t0,
-    interval,
+    t0: 0,
+    interval: 60 / G.diff.bpm,
     beats: 0,            // テンポアップ判定用の通し拍数
     consec: [0, 0, 0, 0], // 同時さしの連続回数
-    phaseT: t0,          // 描画用ビート位相の基準時刻
+    phaseT: 0,           // 描画用ビート位相の基準時刻
     pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
-    event: { type: "point", t: t0 + FIRST_BEAT * interval, actor: 0 },
+    event: null,
+    awaitingClock: true, // 音声時計が動き出した瞬間にarmRoundで開始時刻を確定する
   };
+  if (audioCtx.state === "running") armRound();
+}
 
-  for (const b of INTRO_CLAPS) playClap(t0 + b * interval, 0.6);
+// 開始時刻を「音声時計が動いている今」基準で確定してイントロをスケジュールする。
+// iOSでresumeの完了が遅れても、完了した時点からきれいに始まり、宙ぶらりんにならない
+function armRound() {
+  const t0 = audioCtx.currentTime + 0.5;
+  round.t0 = t0;
+  round.phaseT = t0;
+  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: 0 };
+  round.awaitingClock = false;
+  for (const b of INTRO_CLAPS) playClap(t0 + b * round.interval, 0.6);
   playTick(round.event.t);
 }
 
@@ -362,6 +378,11 @@ function resolvePlayerHaihai(t) {
 
 function update() {
   if (!round || !audioCtx || G.mode === "title" || G.mode === "gameover") return;
+  // 音声時計がまだ動いていなければ、動き出した瞬間に開始時刻を確定する
+  if (round.awaitingClock) {
+    if (audioCtx.state === "running") armRound();
+    else return;
+  }
   const now = audioCtx.currentTime;
   const ev = round.event;
   const win = winNow();
@@ -428,7 +449,7 @@ function update() {
 function loop(ts) {
   if (audioCtx) G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
   // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる
-  G.audioStalled = !!(audioCtx && audioCtx.state === "suspended" && G.mode !== "title");
+  G.audioStalled = !!(audioCtx && audioCtx.state !== "running" && G.mode !== "title");
   update();
   render(G, ts / 1000);
   requestAnimationFrame(loop);
@@ -437,12 +458,14 @@ function loop(ts) {
 // ---------- 入力（キーボード・タッチ共通ロジック） ----------
 
 // タブ切替などでiOSが音声を止めた場合の復帰（進行は音声時計基準なので必須）
+// suspendedだけでなくinterrupted等もまとめて起こす
 function ensureAudioRunning() {
-  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  if (audioCtx && audioCtx.state !== "running") audioCtx.resume().catch(() => {});
 }
 
 // 指差し入力（target: 1=左 2=正面 3=右）
 function handlePointInput(target, t) {
+  if (!round || !round.event) return; // 開始時刻の確定前は無視
   const ev = round.event;
   // イントロ中の早すぎる入力は無視（手拍子につられた分は許す）
   if (G.mode === "intro" && t < ev.t - winNow()) return;
@@ -462,6 +485,7 @@ function handlePointInput(target, t) {
 }
 
 function handleHaihaiInput(t) {
+  if (!round || !round.event) return; // 開始時刻の確定前は無視
   const ev = round.event;
   if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
     resolvePlayerHaihai(t);
