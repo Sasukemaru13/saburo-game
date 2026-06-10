@@ -43,6 +43,34 @@ function lerp(a, b, p) { return a + (b - a) * p; }
 function easeOut(p) { return 1 - (1 - p) * (1 - p); }
 function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
+// 行き過ぎて戻るイージング
+function easeOutBack(x) {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}
+function easePoint(x) { return FX.overshoot ? easeOutBack(x) : easeOut(x); }
+
+// 拍頭でピョンと跳ねて着地する（OFF時は旧来の常時ゆらゆら）
+function beatBob(phase, amp) {
+  if (!FX.beatBounce) return -amp * Math.abs(Math.sin(phase * Math.PI));
+  const k = Math.min(1, phase * 2.2);
+  return -amp * 1.7 * Math.sin(k * Math.PI);
+}
+
+// idx が誰かに指された瞬間のビクッ度（0〜1）
+function flinchAmount(G, idx) {
+  let f = 0;
+  for (let j = 0; j < 4; j++) {
+    if (j === idx) continue;
+    const a = G.chars[j].anim;
+    if (a && a.type === "point" && a.targets.includes(idx)) {
+      f = Math.max(f, 1 - clamp01(((G.now || 0) - animStart(a) - 0.04) / 0.3));
+    }
+  }
+  return f;
+}
+
 function rrect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -123,10 +151,23 @@ function drawCpu(G, idx, now) {
   const anim = c.anim;
   const isTurn = G.mode === "play" && G.turnActor === idx;
 
-  // ビートで軽く弾む
-  const bob = -4 * s * Math.abs(Math.sin(G.beatPhase * Math.PI));
+  // ビートで弾む
+  const bob = beatBob(G.beatPhase, 4 * s);
   const headY = y + bob;
   const bodyTop = y + 26 * s + bob;
+
+  // スクワッシュ&ストレッチ: 指す瞬間に伸び、指された瞬間にビクッと縮む
+  let pop = 0;
+  let flinch = 0;
+  if (FX.squash) {
+    if (anim && anim.type === "point") pop = 1 - clamp01(((G.now || 0) - animStart(anim)) / 0.3);
+    flinch = flinchAmount(G, idx);
+  }
+  const base = y + 92 * s;
+  ctx.save();
+  ctx.translate(x, base);
+  ctx.scale(1 + 0.12 * flinch - 0.05 * pop, 1 + 0.12 * pop - 0.18 * flinch);
+  ctx.translate(-x, -base);
 
   // 手番の光
   if (isTurn) {
@@ -236,6 +277,8 @@ function drawCpu(G, idx, now) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(c.name, x, y + 111 * s);
+
+  ctx.restore(); // スクワッシュ変形を解除
 }
 
 function animStart(anim) {
@@ -248,13 +291,13 @@ function drawCpuOverlay(G, idx, now) {
   const anim = c.anim;
   if (!anim) return;
   const { x, y, s } = CPU_POS[idx];
-  const bob = -4 * s * Math.abs(Math.sin(G.beatPhase * Math.PI));
+  const bob = beatBob(G.beatPhase, 4 * s);
   const headY = y + bob;
   const bodyTop = y + 26 * s + bob;
 
   ctx.lineCap = "round";
   if (anim.type === "point") {
-    const p = easeOut(clamp01((now - animStart(anim)) / 0.13));
+    const p = easePoint(clamp01(((G.now || 0) - animStart(anim)) / 0.16));
     for (const tIdx of anim.targets) {
       drawCpuPointGlove(G, idx, tIdx, p, bodyTop);
     }
@@ -289,11 +332,11 @@ function drawCpuPointGlove(G, idx, targetIdx, p, bodyTop) {
 
 function drawPlayerHands(G, now) {
   const anim = G.chars[0].anim;
-  const bob = 3 * Math.abs(Math.sin(G.beatPhase * Math.PI));
+  const bob = beatBob(G.beatPhase, 3);
 
   if (anim && anim.type === "point") {
     // 指差し: 手袋が対象の方へ少しだけ進んで指す（伸ばしすぎない）
-    const p = easeOut(clamp01((now - animStart(anim)) / 0.12));
+    const p = easePoint(clamp01(((G.now || 0) - animStart(anim)) / 0.14));
     const targets = anim.targets.slice().sort((a, b) => TARGET_POS[a].x - TARGET_POS[b].x);
     const hands = targets.length === 2 ? ["left", "right"] : [targets[0] === 1 ? "left" : "right"];
     for (let i = 0; i < targets.length; i++) {
@@ -646,6 +689,48 @@ function shade(hex, amt) {
   return `rgb(${r},${g},${b})`;
 }
 
+// +1/+2のポップアップ
+function drawPopups(G) {
+  if (!FX.scorePopup || !G.popups) return;
+  ctx.textAlign = "center";
+  for (const p of G.popups) {
+    const age = (G.now || 0) - p.t0;
+    if (age < 0 || age > 0.8) continue;
+    const k = clamp01(age / 0.8);
+    const sc = age < 0.12 ? easeOutBack(age / 0.12) : 1;
+    ctx.globalAlpha = 1 - k * k;
+    ctx.font = F(26 * sc + 2, 800);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, p.x, p.y - 46 * k);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// テンポアップの演出
+function drawSpeedup(G) {
+  if (!FX.speedupFx || !G.speedupAt || !G.now) return;
+  const age = G.now - G.speedupAt;
+  if (age < 0 || age > 0.9) return;
+  const inP = easeOutBack(clamp01(age / 0.15));
+  const fade = age > 0.6 ? 1 - (age - 0.6) / 0.3 : 1;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, fade);
+  ctx.translate(240, 215);
+  ctx.scale(inP, inP);
+  ctx.textAlign = "center";
+  ctx.font = F(34, 800);
+  ctx.fillStyle = "#ffd95e";
+  ctx.shadowColor = "rgba(255,170,40,0.8)";
+  ctx.shadowBlur = 18;
+  ctx.fillText("スピードアップ！", 0, 0);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.font = F(16, 800);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(`BPM ${G.bpmNow}`, 0, 30);
+  ctx.restore();
+}
+
 // メイン描画。game.js から毎フレーム呼ばれる
 function render(G, now) {
   if (G.mode === "title") {
@@ -653,12 +738,34 @@ function render(G, now) {
     return;
   }
 
+  // 自分が指された瞬間の画面シェイク
+  let shx = 0;
+  let shy = 0;
+  if (FX.shake && G.now && G.mode !== "gameover") {
+    let f = 0;
+    for (let i = 1; i <= 3; i++) {
+      const a = G.chars[i].anim;
+      if (a && a.type === "point" && a.targets.includes(0)) {
+        f = Math.max(f, 1 - clamp01((G.now - animStart(a)) / 0.35));
+      }
+    }
+    const amp = 7 * f * f;
+    shx = Math.sin(now * 67) * amp;
+    shy = Math.cos(now * 51) * amp;
+  }
+
+  ctx.save();
+  ctx.translate(shx, shy);
   drawStage(now);
   drawBeatRing(G);
   for (let i = 1; i <= 3; i++) drawCpu(G, i, now);
   for (let i = 1; i <= 3; i++) drawCpuOverlay(G, i, now);
   drawVignette(playerIsTargeted(G) ? 1 : 0);
   drawPlayerHands(G, now);
+  ctx.restore();
+
+  drawPopups(G);
+  drawSpeedup(G);
   drawHUD(G);
 
   if (G.mode === "intro") drawIntro(G);

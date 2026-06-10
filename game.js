@@ -44,6 +44,9 @@ const G = {
   loseReason: "",
   introText: "",
   bpmNow: 100,
+  now: 0,        // 音声クロック（render側のアニメ進行に使う）
+  popups: [],    // +1/+2ポップアップ
+  speedupAt: 0,  // 直近のテンポアップ時刻
 };
 
 // ---------- 音声 ----------
@@ -174,6 +177,8 @@ async function startRound() {
   G.newBest = false;
   G.loseReason = "";
   G.bpmNow = G.diff.bpm;
+  G.popups = [];
+  G.speedupAt = 0;
 
   const interval = 60 / G.diff.bpm;
   const t0 = audioCtx.currentTime + 0.5;
@@ -209,7 +214,41 @@ function maybeRamp() {
   if (round.beats % RAMP_EVERY === 0) {
     round.interval *= RAMP_FACTOR;
     G.bpmNow = Math.round(60 / round.interval);
+    G.speedupAt = audioCtx.currentTime;
+    if (FX.speedupFx) playSpeedup(audioCtx.currentTime);
   }
+}
+
+// テンポアップのジングル（上昇2音）
+function playSpeedup(t) {
+  for (let i = 0; i < 2; i++) {
+    const osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = i === 0 ? 880 : 1318;
+    const g = audioCtx.createGain();
+    const s = t + i * 0.09;
+    g.gain.setValueAtTime(0.16, s);
+    g.gain.exponentialRampToValueAtTime(0.001, s + 0.12);
+    osc.connect(g).connect(audioCtx.destination);
+    osc.start(s);
+    osc.stop(s + 0.14);
+  }
+}
+
+// +1/+2ポップアップを積む（actor の近くに出す）
+function addPopup(actor, gain) {
+  if (!FX.scorePopup) return;
+  const pos = actor === 0
+    ? { x: 240, y: 612 }
+    : { x: CPU_POS[actor].x, y: CPU_POS[actor].y - 84 };
+  G.popups.push({
+    text: `+${gain}`,
+    color: gain >= 2 ? "#ffd95e" : "#ffffff",
+    x: pos.x,
+    y: pos.y,
+    t0: audioCtx.currentTime,
+  });
+  if (G.popups.length > 12) G.popups.shift();
 }
 
 // 実効判定窓: 高速域では拍間隔の40%まで自動で締まる（窓が拍より広いと壊れるため）
@@ -231,7 +270,9 @@ function doPoint(actor, targets) {
   G.chars[actor].anim = { type: "point", targets, start: now, until: now + round.interval * 0.8 };
 
   // 同時指しはハイリスクなぶん +2拍
-  G.score += actor === 0 && targets.length === 2 ? 2 : 1;
+  const gain = actor === 0 && targets.length === 2 ? 2 : 1;
+  G.score += gain;
+  addPopup(actor, gain);
   maybeRamp();
 
   if (targets.length === 2) {
@@ -327,6 +368,8 @@ function update() {
   for (const c of G.chars) {
     if (c.anim && now > c.anim.until) c.anim = null;
   }
+  // 消えたポップアップの掃除
+  if (G.popups.length) G.popups = G.popups.filter((p) => now - p.t0 < 0.9);
 
   G.turnActor = ev.type === "point" ? ev.actor : null;
 
@@ -360,6 +403,7 @@ function update() {
     // 全員完了したら手番が同時指しした人に戻る
     if (ev.cpuDone && ev.playerDone && now >= ev.t) {
       G.score++;
+      addPopup(ev.returnTo, 1);
       maybeRamp();
       advanceEvent({ type: "point", t: ev.t + round.interval, actor: ev.returnTo });
       prepareCpu();
@@ -368,6 +412,7 @@ function update() {
 }
 
 function loop(ts) {
+  if (audioCtx) G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
   update();
   render(G, ts / 1000);
   requestAnimationFrame(loop);
