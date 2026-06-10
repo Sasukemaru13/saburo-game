@@ -12,7 +12,7 @@ const FX = {
   overshoot: true,  // 手のオーバーシュート（行き過ぎて戻る）
   beatBounce: true, // 拍に合わせて全員ピョンと跳ねる
   squash: true,     // 指す側が伸びる・指された側がビクッと縮む
-  shake: true,      // 自分が指された瞬間の画面シェイク
+  shake: false,     // 自分が指された瞬間の画面シェイク（強調しすぎて簡単になるためOFF）
   scorePopup: true, // +1/+2のポップアップ
   speedupFx: true,  // テンポアップの演出と効果音
 };
@@ -540,13 +540,23 @@ function drawBeatRing(G) {
 }
 
 function drawHUD(G) {
-  // スコア
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#fff";
-  ctx.font = F(44, 800);
+  // スコア（上部の空白を使って大きく）
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
   ctx.shadowColor = "rgba(0,0,0,0.5)";
-  ctx.shadowBlur = 6;
-  ctx.fillText(`${G.score} 拍`, 240, 56);
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = "#fff";
+  ctx.font = F(68, 800);
+  const numText = String(G.score);
+  const numW = ctx.measureText(numText).width;
+  ctx.font = F(26, 800);
+  const unitW = ctx.measureText("拍").width;
+  const x0 = 240 - (numW + 10 + unitW) / 2;
+  ctx.font = F(68, 800);
+  ctx.fillText(numText, x0, 96);
+  ctx.font = F(26, 800);
+  ctx.fillStyle = "#c5cce6";
+  ctx.fillText("拍", x0 + numW + 10, 96);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
@@ -760,7 +770,7 @@ function render(G, now) {
   drawBeatRing(G);
   for (let i = 1; i <= 3; i++) drawCpu(G, i, now);
   for (let i = 1; i <= 3; i++) drawCpuOverlay(G, i, now);
-  drawVignette(playerIsTargeted(G) ? 1 : 0);
+  drawVignette(); // 指された強調はしない（手袋が迫ってくるのを見て反応するゲーム性を保つ）
   drawPlayerHands(G, now);
   ctx.restore();
 
