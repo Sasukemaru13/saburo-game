@@ -198,8 +198,7 @@ async function startRound() {
     t0,
     interval,
     beats: 0,            // テンポアップ判定用の通し拍数
-    consec: [0, 0, 0, 0], // 同時指しの連続回数
-    doubleBonusUsed: false, // 2人指しの2点ボーナスはラウンド中1回だけ
+    consec: [0, 0, 0, 0], // 同時さしの連続回数
     phaseT: t0,          // 描画用ビート位相の基準時刻
     pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
     event: { type: "point", t: t0 + FIRST_BEAT * interval, actor: 0 },
@@ -282,12 +281,10 @@ function doPoint(actor, targets) {
   playVoice("saburo", G.chars[actor].pitch);
   G.chars[actor].anim = { type: "point", targets, start: now, until: now + round.interval * 0.8 };
 
-  // 同時指しのボーナスは最初の1回だけ2点（2回目以降は1点）
+  // 同時さしボーナス: 連続の1回目だけ+2点。連続2回目は+1点、間をあければまた+2点
+  // （consecは単独さしで0に戻るので「連続の何回目か」がそのまま分かる）
   let gain = 1;
-  if (actor === 0 && targets.length === 2 && !round.doubleBonusUsed) {
-    gain = 2;
-    round.doubleBonusUsed = true;
-  }
+  if (actor === 0 && targets.length === 2 && round.consec[0] === 0) gain = 2;
   G.score += gain;
   addPopup(actor, gain);
   maybeRamp();
@@ -344,7 +341,7 @@ function resolvePlayerPoint() {
     return;
   }
   if (keys.length === 2 && round.consec[0] >= 2) {
-    gameOver("同時指しは連続2回まで！");
+    gameOver("同時さしは連続2回まで！");
     return;
   }
   doPoint(0, keys);
@@ -460,7 +457,7 @@ function handlePointInput(target, t) {
   } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
     gameOver("今はハイハイのタイミング！");
   } else if (G.mode === "play") {
-    gameOver("自分の番じゃないのに指差した！");
+    gameOver("自分の番じゃないのに指をさした！");
   }
 }
 
@@ -578,6 +575,13 @@ canvas.addEventListener("touchstart", (e) => {
     if (z === "haihai") handleHaihaiInput(t);
     else handlePointInput(z, t);
   }
+}, { passive: false });
+
+// iOSは音声の許可ジェスチャーとしてtouchendを要求することがある。
+// 指が離れた瞬間にも音声を起こすことで、1タップ目（押す→離す）でスタートが完結する
+canvas.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  ensureAudioRunning();
 }, { passive: false });
 
 // デスクトップでもタイトル・リザルトはクリック可能にする（プレイ中の誤クリックは無視）
