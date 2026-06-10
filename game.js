@@ -1,24 +1,35 @@
 // game.js — 三郎ゲーム本体（拍エンジン・ターン管理・CPU・入力判定・音声）
+// スコアアタック型: CPUはミスしない。自分がリズムを外すまで何拍続くかを競う。
 
 const DIFFICULTIES = {
-  easy:   { label: "やさしい",   bpm: 80,  window: 0.22, cpuMiss: 0.10,  cpuDouble: 0.15 },
-  normal: { label: "ふつう",     bpm: 110, window: 0.16, cpuMiss: 0.04,  cpuDouble: 0.25 },
-  hard:   { label: "むずかしい", bpm: 140, window: 0.11, cpuMiss: 0.012, cpuDouble: 0.33 },
+  easy:   { label: "やさしい",   bpm: 75,  window: 0.22, cpuDouble: 0.15 },
+  normal: { label: "ふつう",     bpm: 100, window: 0.16, cpuDouble: 0.25 },
+  hard:   { label: "むずかしい", bpm: 130, window: 0.11, cpuDouble: 0.33 },
 };
+const RAMP_EVERY = 8;    // この拍数ごとにテンポが上がる
+const RAMP_FACTOR = 0.96;
 
 // 0=プレイヤー(手前) 1=左 2=正面 3=右
 function makeChars() {
   return [
-    { name: "あなた", color: "#e8554d", pos: { x: 450, y: 460 }, pitch: 1.0,  anim: null, keyHint: "" },
-    { name: "一郎",   color: "#4d7de8", pos: { x: 150, y: 240 }, pitch: 0.82, anim: null, keyHint: "A" },
-    { name: "二郎",   color: "#4db35e", pos: { x: 450, y: 120 }, pitch: 1.22, anim: null, keyHint: "W" },
-    { name: "四郎",   color: "#c78b2e", pos: { x: 750, y: 240 }, pitch: 1.45, anim: null, keyHint: "D" },
+    { name: "あなた", color: "#e8554d", pitch: 1.0,  anim: null },
+    { name: "一郎",   color: "#4d7de8", pitch: 0.82, anim: null },
+    { name: "二郎",   color: "#4db35e", pitch: 1.22, anim: null },
+    { name: "四郎",   color: "#c78b2e", pitch: 1.45, anim: null },
   ];
 }
 
 const KEY_TARGET = { a: 1, w: 2, d: 3 };
 const INTRO_CLAPS = [0, 1, 2, 2.5, 3]; // タン タン タタ タン
 const FIRST_BEAT = 4;
+
+function loadBests() {
+  const b = {};
+  for (const k of Object.keys(DIFFICULTIES)) {
+    b[k] = Number(localStorage.getItem("saburo_best_" + k) || 0);
+  }
+  return b;
+}
 
 const G = {
   mode: "title",
@@ -27,10 +38,12 @@ const G = {
   chars: makeChars(),
   beatPhase: 0,
   turnActor: null,
-  survived: 0,
-  loser: null,
+  score: 0,
+  bests: loadBests(),
+  newBest: false,
   loseReason: "",
   introText: "",
+  bpmNow: 100,
 };
 
 // ---------- 音声 ----------
@@ -87,6 +100,20 @@ function makeClapBuffer() {
   return buf;
 }
 
+// メトロノーム音も波形を事前生成して使い回す（毎回組み立てると鳴り方がばらつく）
+function makeTickBuffer() {
+  const len = 0.06;
+  const sr = audioCtx.sampleRate;
+  const buf = audioCtx.createBuffer(1, sr * len, sr);
+  const d = buf.getChannelData(0);
+  const attack = sr * 0.002; // 2msの立ち上がりでクリックnoise防止
+  for (let i = 0; i < d.length; i++) {
+    const env = (i < attack ? i / attack : 1) * Math.exp(-i / (sr * 0.012));
+    d[i] = Math.sin((2 * Math.PI * 1600 * i) / sr) * env;
+  }
+  return buf;
+}
+
 function playVoice(name, pitch, when = 0, vol = 1.0) {
   const src = audioCtx.createBufferSource();
   src.buffer = buffers[name];
@@ -108,20 +135,6 @@ function playClap(when, vol = 0.5) {
   g.gain.value = vol;
   src.connect(bp).connect(g).connect(audioCtx.destination);
   src.start(Math.max(when, audioCtx.currentTime));
-}
-
-// メトロノーム音も波形を事前生成して使い回す（毎回組み立てると鳴り方がばらつく）
-function makeTickBuffer() {
-  const len = 0.06;
-  const sr = audioCtx.sampleRate;
-  const buf = audioCtx.createBuffer(1, sr * len, sr);
-  const d = buf.getChannelData(0);
-  const attack = sr * 0.002; // 2msの立ち上がりでクリックnoise防止
-  for (let i = 0; i < d.length; i++) {
-    const env = (i < attack ? i / attack : 1) * Math.exp(-i / (sr * 0.012));
-    d[i] = Math.sin((2 * Math.PI * 1600 * i) / sr) * env;
-  }
-  return buf;
 }
 
 function playTick(when) {
@@ -147,12 +160,9 @@ function playBuzzer() {
 }
 
 // ---------- ラウンド進行 ----------
+// イベントは絶対時刻 t を持つ。テンポが上がっても次イベントは「前イベント + 今のinterval」。
 
-let round = null; // 1ラウンド分の進行状態
-
-function beatTime(beat) {
-  return round.t0 + beat * round.interval;
-}
+let round = null;
 
 async function startRound() {
   await initAudio();
@@ -160,30 +170,57 @@ async function startRound() {
   G.chars = makeChars();
   G.mode = "intro";
   G.turnActor = null;
-  G.survived = 0;
-  G.loser = null;
+  G.score = 0;
+  G.newBest = false;
   G.loseReason = "";
+  G.bpmNow = G.diff.bpm;
 
+  const interval = 60 / G.diff.bpm;
+  const t0 = audioCtx.currentTime + 0.5;
   round = {
-    t0: audioCtx.currentTime + 0.5,
-    interval: 60 / G.diff.bpm,
+    t0,
+    interval,
+    beats: 0,            // テンポアップ判定用の通し拍数
     consec: [0, 0, 0, 0], // 同時指しの連続回数
-    nextTickBeat: FIRST_BEAT,
-    pendingKeys: null, // プレイヤーの指差し入力収集 {keys:[], t}
-    event: { type: "point", beat: FIRST_BEAT, actor: 0 },
+    phaseT: t0,          // 描画用ビート位相の基準時刻
+    pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
+    event: { type: "point", t: t0 + FIRST_BEAT * interval, actor: 0 },
   };
 
-  // イントロの手拍子を先行スケジュール
-  for (const b of INTRO_CLAPS) playClap(beatTime(b), 0.6);
+  for (const b of INTRO_CLAPS) playClap(t0 + b * interval, 0.6);
+  playTick(round.event.t);
 }
 
-function gameOver(loser, reason) {
+function gameOver(reason) {
   G.mode = "gameover";
-  G.loser = loser;
   G.loseReason = reason;
   G.turnActor = null;
-  G.chars[loser].anim = null;
+  if (G.score > G.bests[G.difficulty]) {
+    G.bests[G.difficulty] = G.score;
+    G.newBest = true;
+    localStorage.setItem("saburo_best_" + G.difficulty, String(G.score));
+  }
   playBuzzer();
+}
+
+// 拍が進むごとに呼ぶ。RAMP_EVERY拍ごとにテンポを上げる（上限なし）
+function maybeRamp() {
+  round.beats++;
+  if (round.beats % RAMP_EVERY === 0) {
+    round.interval *= RAMP_FACTOR;
+    G.bpmNow = Math.round(60 / round.interval);
+  }
+}
+
+// 実効判定窓: 高速域では拍間隔の40%まで自動で締まる（窓が拍より広いと壊れるため）
+function winNow() {
+  return Math.min(G.diff.window, round.interval * 0.4);
+}
+
+function advanceEvent(nextEvent) {
+  round.phaseT = nextEvent.t - round.interval;
+  round.event = nextEvent;
+  playTick(nextEvent.t);
 }
 
 // actor が targets を指差す（入力検証は済んでいる前提）
@@ -191,33 +228,35 @@ function doPoint(actor, targets) {
   const ev = round.event;
   const now = audioCtx.currentTime;
   playVoice("saburo", G.chars[actor].pitch);
-  G.chars[actor].anim = { type: "point", targets, until: now + round.interval * 0.8 };
-  G.survived++;
+  G.chars[actor].anim = { type: "point", targets, start: now, until: now + round.interval * 0.8 };
+
+  // 同時指しはハイリスクなぶん +2拍
+  G.score += actor === 0 && targets.length === 2 ? 2 : 1;
+  maybeRamp();
 
   if (targets.length === 2) {
     round.consec[actor]++;
-    round.event = {
+    advanceEvent({
       type: "haihai",
-      beat: ev.beat + 1,
+      t: ev.t + round.interval,
       actors: targets.slice(),
       returnTo: actor,
       cpuDone: false,
       playerDone: !targets.includes(0),
-    };
+    });
   } else {
     round.consec[actor] = 0;
     round.consec[targets[0]] = 0;
-    round.event = { type: "point", beat: ev.beat + 1, actor: targets[0] };
+    advanceEvent({ type: "point", t: ev.t + round.interval, actor: targets[0] });
   }
   prepareCpu();
 }
 
-// 次イベントがCPU絡みなら、実行タイミング(ジッター)とミス判定を先に決めておく
+// 次イベントがCPUの指差しなら実行タイミング(ジッター)を決めておく。CPUはミスしない
 function prepareCpu() {
   const ev = round.event;
   if (ev.type === "point" && ev.actor !== 0) {
-    ev.cpuActAt = beatTime(ev.beat) + (Math.random() - 0.5) * 0.05;
-    ev.cpuMiss = Math.random() < G.diff.cpuMiss;
+    ev.cpuActAt = ev.t + (Math.random() - 0.5) * 0.05;
     ev.cpuDone = false;
   }
 }
@@ -242,13 +281,12 @@ function resolvePlayerPoint() {
   const ev = round.event;
   if (ev.type !== "point" || ev.actor !== 0) return;
 
-  const tb = beatTime(ev.beat);
-  if (Math.abs(t - tb) > G.diff.window) {
-    gameOver(0, t < tb ? "早すぎた！" : "遅すぎた！");
+  if (Math.abs(t - ev.t) > winNow()) {
+    gameOver(t < ev.t ? "早すぎた！" : "遅すぎた！");
     return;
   }
   if (keys.length === 2 && round.consec[0] >= 2) {
-    gameOver(0, "同時指しは連続2回まで！");
+    gameOver("同時指しは連続2回まで！");
     return;
   }
   doPoint(0, keys);
@@ -256,13 +294,12 @@ function resolvePlayerPoint() {
 
 function resolvePlayerHaihai(t) {
   const ev = round.event;
-  const tb = beatTime(ev.beat);
-  if (Math.abs(t - tb) > G.diff.window) {
-    gameOver(0, t < tb ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！");
+  if (Math.abs(t - ev.t) > winNow()) {
+    gameOver(t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！");
     return;
   }
   playVoice("haihai", G.chars[0].pitch);
-  G.chars[0].anim = { type: "haihai", until: tb + round.interval * 0.9 };
+  G.chars[0].anim = { type: "haihai", start: audioCtx.currentTime, until: ev.t + round.interval * 0.9 };
   ev.playerDone = true;
 }
 
@@ -272,24 +309,18 @@ function update() {
   if (!round || !audioCtx || G.mode === "title" || G.mode === "gameover") return;
   const now = audioCtx.currentTime;
   const ev = round.event;
-  const win = G.diff.window;
+  const win = winNow();
 
   // ビート位相（描画用）
-  const raw = (now - round.t0) / round.interval;
-  G.beatPhase = raw < 0 ? 0 : raw - Math.floor(raw);
+  while (now >= round.phaseT + round.interval) round.phaseT += round.interval;
+  G.beatPhase = Math.max(0, (now - round.phaseT) / round.interval);
 
   // イントロ表示と play への移行
   if (G.mode === "intro") {
+    const raw = (now - round.t0) / round.interval;
     const claps = INTRO_CLAPS.filter((b) => raw >= b).length;
     G.introText = ["", "タン", "タン　タン", "タン　タン　タ", "タン　タン　タタ", "タン　タン　タタ　タン"][claps];
     if (raw >= 3.5) G.mode = "play";
-  }
-
-  // メトロノーム（少し先までスケジュール）
-  while (beatTime(round.nextTickBeat) < now + 0.15) {
-    const tt = beatTime(round.nextTickBeat);
-    if (tt > now - 0.05) playTick(tt); // 大きく遅れた分は鳴らさず捨てる
-    round.nextTickBeat++;
   }
 
   // アニメーションの期限切れ
@@ -298,48 +329,39 @@ function update() {
   }
 
   G.turnActor = ev.type === "point" ? ev.actor : null;
-  const tb = beatTime(ev.beat);
 
   if (ev.type === "point") {
     if (ev.actor === 0) {
       // プレイヤーの番: 時間切れ判定
-      if (now > tb + win && !round.pendingKeys) {
-        gameOver(0, "反応できなかった…");
+      if (now > ev.t + win && !round.pendingKeys) {
+        gameOver("反応できなかった…");
       }
-    } else {
-      // CPUの番
-      if (!ev.cpuDone && now >= ev.cpuActAt) {
-        if (ev.cpuMiss) {
-          if (now > tb + win) {
-            gameOver(ev.actor, `${G.chars[ev.actor].name}がリズムを外した！`);
-          }
-        } else {
-          ev.cpuDone = true;
-          doPoint(ev.actor, cpuChooseTargets(ev.actor));
-        }
-      }
+    } else if (!ev.cpuDone && now >= ev.cpuActAt) {
+      ev.cpuDone = true;
+      doPoint(ev.actor, cpuChooseTargets(ev.actor));
     }
   } else if (ev.type === "haihai") {
     // CPU側のハイハイは拍ちょうどに実行
-    if (!ev.cpuDone && now >= tb) {
+    if (!ev.cpuDone && now >= ev.t) {
       ev.cpuDone = true;
       let delay = 0;
       for (const a of ev.actors) {
         if (a === 0) continue;
-        playVoice("haihai", G.chars[a].pitch, tb + delay);
-        G.chars[a].anim = { type: "haihai", until: tb + round.interval * 0.9 };
+        playVoice("haihai", G.chars[a].pitch, ev.t + delay);
+        G.chars[a].anim = { type: "haihai", start: ev.t, until: ev.t + round.interval * 0.9 };
         delay += 0.03;
       }
     }
     // プレイヤーが含まれる場合の時間切れ
-    if (!ev.playerDone && now > tb + win) {
-      gameOver(0, "ハイハイできなかった…");
+    if (!ev.playerDone && now > ev.t + win) {
+      gameOver("ハイハイできなかった…");
       return;
     }
     // 全員完了したら手番が同時指しした人に戻る
-    if (ev.cpuDone && ev.playerDone && now >= tb) {
-      G.survived++;
-      round.event = { type: "point", beat: ev.beat + 1, actor: ev.returnTo };
+    if (ev.cpuDone && ev.playerDone && now >= ev.t) {
+      G.score++;
+      maybeRamp();
+      advanceEvent({ type: "point", t: ev.t + round.interval, actor: ev.returnTo });
       prepareCpu();
     }
   }
@@ -377,7 +399,7 @@ window.addEventListener("keydown", (e) => {
 
   if (key in KEY_TARGET) {
     // イントロ中の早すぎる入力は無視（手拍子につられた分は許す）
-    if (G.mode === "intro" && t < beatTime(FIRST_BEAT) - G.diff.window) return;
+    if (G.mode === "intro" && t < round.event.t - winNow()) return;
 
     if (ev.type === "point" && ev.actor === 0) {
       const target = KEY_TARGET[key];
@@ -388,9 +410,9 @@ window.addEventListener("keydown", (e) => {
         setTimeout(resolvePlayerPoint, 60); // 同時押し猶予
       }
     } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
-      gameOver(0, "ハイハイはSpaceキー！");
+      gameOver("ハイハイはSpaceキー！");
     } else if (G.mode === "play") {
-      gameOver(0, "自分の番じゃないのに指差した！");
+      gameOver("自分の番じゃないのに指差した！");
     }
     return;
   }
@@ -400,7 +422,7 @@ window.addEventListener("keydown", (e) => {
     if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
       resolvePlayerHaihai(t);
     } else if (G.mode === "play") {
-      gameOver(0, "今はハイハイじゃない！");
+      gameOver("今はハイハイじゃない！");
     }
   }
 });

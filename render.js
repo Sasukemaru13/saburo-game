@@ -1,11 +1,33 @@
 // render.js — 描画専用。game.js が組み立てた状態オブジェクト G を毎フレーム描く
+// 一人称視点の縦型UI: 向かいにCPU3人、画面下に自分の手だけが見える
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const W = canvas.width;
-const H = canvas.height;
+const W = canvas.width;   // 480
+const H = canvas.height;  // 800
 
-function drawRoundRect(x, y, w, h, r) {
+// CPUの座席（1=左 2=正面奥 3=右）。s は奥行きスケール
+const CPU_POS = {
+  1: { x: 100, y: 415, s: 1.18 },
+  2: { x: 240, y: 355, s: 1.02 },
+  3: { x: 380, y: 415, s: 1.18 },
+};
+// 指差しの矢印が向かう先（0=自分: 画面下中央）
+const TARGET_POS = {
+  0: { x: 240, y: 660 },
+  1: { x: CPU_POS[1].x, y: CPU_POS[1].y },
+  2: { x: CPU_POS[2].x, y: CPU_POS[2].y },
+  3: { x: CPU_POS[3].x, y: CPU_POS[3].y },
+};
+const HAND_REST = { left: { x: 150, y: 728 }, right: { x: 330, y: 728 } };
+const SKIN = "#ffd9b8";
+const SKIN_DARK = "#e8b890";
+
+function lerp(a, b, p) { return a + (b - a) * p; }
+function easeOut(p) { return 1 - (1 - p) * (1 - p); }
+function clamp01(v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
+
+function rrect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -15,278 +37,614 @@ function drawRoundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawBubble(x, y, text) {
-  ctx.font = "bold 22px sans-serif";
+function drawBubble(x, y, text, scale = 1) {
+  ctx.font = `bold ${Math.round(20 * scale)}px sans-serif`;
   const tw = ctx.measureText(text).width;
-  const bw = tw + 28;
-  const bh = 38;
+  const bw = tw + 26 * scale;
+  const bh = 34 * scale;
   const bx = x - bw / 2;
   const by = y - bh;
-  ctx.fillStyle = "#ffffff";
-  drawRoundRect(bx, by, bw, bh, 10);
+  ctx.fillStyle = "#fffdf5";
+  ctx.shadowColor = "rgba(0,0,0,0.35)";
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 3;
+  rrect(bx, by, bw, bh, 9 * scale);
   ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(x - 7, by + bh);
-  ctx.lineTo(x + 7, by + bh);
-  ctx.lineTo(x, by + bh + 10);
+  ctx.moveTo(x - 6 * scale, by + bh);
+  ctx.lineTo(x + 6 * scale, by + bh);
+  ctx.lineTo(x, by + bh + 9 * scale);
   ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = "#222";
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.fillStyle = "#2a2520";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, x, by + bh / 2 + 1);
 }
 
-// キャラ1体を描く。anim: {type, t(0-1経過), targets}
-function drawChar(G, idx, now) {
+// ---------- 背景・舞台 ----------
+
+function drawStage(now) {
+  // 部屋
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#2e2540");
+  bg.addColorStop(0.5, "#241f33");
+  bg.addColorStop(1, "#171420");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 天井からの暖色ライト
+  const light = ctx.createRadialGradient(240, 160, 30, 240, 200, 300);
+  light.addColorStop(0, "rgba(255, 208, 140, 0.16)");
+  light.addColorStop(1, "rgba(255, 208, 140, 0)");
+  ctx.fillStyle = light;
+  ctx.fillRect(0, 0, W, 520);
+
+  // 床（ふんわり明るい円で奥行きを出す）
+  const floor = ctx.createRadialGradient(240, 620, 40, 240, 620, 320);
+  floor.addColorStop(0, "rgba(255, 214, 150, 0.06)");
+  floor.addColorStop(1, "rgba(255, 214, 150, 0)");
+  ctx.fillStyle = floor;
+  ctx.fillRect(0, 380, W, 420);
+}
+
+function drawVignette(extraRed = 0) {
+  const v = ctx.createRadialGradient(240, 400, 220, 240, 400, 560);
+  v.addColorStop(0, "rgba(0,0,0,0)");
+  v.addColorStop(1, `rgba(${40 * extraRed}, 0, 0, ${0.34 + 0.25 * extraRed})`);
+  ctx.fillStyle = v;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ---------- CPUキャラ ----------
+
+function drawCpu(G, idx, now) {
   const c = G.chars[idx];
-  const { x, y } = c.pos;
+  const { x, y, s } = CPU_POS[idx];
   const anim = c.anim;
   const isTurn = G.mode === "play" && G.turnActor === idx;
-  const lost = G.mode === "gameover" && G.loser === idx;
 
-  // 手番マーカー（足元のリング）
+  // ビートで軽く弾む
+  const bob = -4 * s * Math.abs(Math.sin(G.beatPhase * Math.PI));
+  const headY = y + bob;
+  const bodyTop = y + 26 * s + bob;
+
+  // 手番の光
   if (isTurn) {
-    const pulse = 1 + 0.12 * Math.sin(now * 6);
-    ctx.strokeStyle = "#ffd95e";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.ellipse(x, y + 62, 58 * pulse, 16 * pulse, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    const glow = ctx.createRadialGradient(x, y + 10, 10, x, y + 10, 95 * s);
+    glow.addColorStop(0, "rgba(255, 214, 90, 0.28)");
+    glow.addColorStop(1, "rgba(255, 214, 90, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(x - 100, y - 90, 200, 200);
   }
 
-  // 待機時はビートに合わせて軽く弾む
-  let bob = 0;
-  if (!lost && (G.mode === "play" || G.mode === "intro")) {
-    bob = -4 * Math.abs(Math.sin(G.beatPhase * Math.PI));
-  }
-  const headY = y - 38 + bob;
-  const bodyY = y - 10 + bob;
-
-  const color = lost ? "#777" : c.color;
-
-  // 体
-  ctx.fillStyle = color;
-  drawRoundRect(x - 26, bodyY, 52, 64, 16);
+  // 影
+  ctx.fillStyle = "rgba(0,0,0,0.30)";
+  ctx.beginPath();
+  ctx.ellipse(x, y + 92 * s, 52 * s, 12 * s, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // 腕
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 10;
-  ctx.lineCap = "round";
-  const shoulderY = bodyY + 14;
+  // 体（グラデーション）
+  const bw = 62 * s;
+  const bh = 66 * s;
+  const grad = ctx.createLinearGradient(x, bodyTop, x, bodyTop + bh);
+  grad.addColorStop(0, c.color);
+  grad.addColorStop(1, shade(c.color, -0.35));
+  ctx.fillStyle = grad;
+  rrect(x - bw / 2, bodyTop, bw, bh, 18 * s);
+  ctx.fill();
+  // 襟
+  ctx.fillStyle = "rgba(255,255,255,0.22)";
+  ctx.beginPath();
+  ctx.arc(x, bodyTop + 4 * s, 12 * s, 0, Math.PI);
+  ctx.fill();
 
-  if (anim && anim.type === "point") {
-    // 指差し: 対象ごとに腕を伸ばし矢印を出す
-    for (const tIdx of anim.targets) {
-      const tp = G.chars[tIdx].pos;
-      const dx = tp.x - x;
-      const dy = tp.y - y;
-      const len = Math.hypot(dx, dy);
-      const ux = dx / len;
-      const uy = dy / len;
-      const ax = x + ux * 78;
-      const ay = shoulderY + uy * 78;
-      ctx.beginPath();
-      ctx.moveTo(x, shoulderY);
-      ctx.lineTo(ax, ay);
-      ctx.stroke();
-      // 指先の矢印
-      ctx.fillStyle = "#ffd95e";
-      ctx.save();
-      ctx.translate(ax + ux * 14, ay + uy * 14);
-      ctx.rotate(Math.atan2(uy, ux));
-      ctx.beginPath();
-      ctx.moveTo(14, 0);
-      ctx.lineTo(-6, -9);
-      ctx.lineTo(-6, 9);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
-    }
-    drawBubble(x, headY - 56, "三郎！");
-  } else if (anim && anim.type === "haihai") {
-    // ハイハイ: 拳を頭の高さで振る
-    const sway = Math.sin(now * 18) * 10;
-    ctx.beginPath();
-    ctx.moveTo(x - 20, shoulderY);
-    ctx.lineTo(x - 40, headY + sway);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x + 20, shoulderY);
-    ctx.lineTo(x + 40, headY - sway);
-    ctx.stroke();
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(x - 40, headY + sway, 11, 0, Math.PI * 2);
-    ctx.arc(x + 40, headY - sway, 11, 0, Math.PI * 2);
-    ctx.fill();
-    drawBubble(x, headY - 56, "ハイハイ");
-  } else {
-    // 下ろした腕
-    ctx.beginPath();
-    ctx.moveTo(x - 20, shoulderY);
-    ctx.lineTo(x - 30, bodyY + 50);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x + 20, shoulderY);
-    ctx.lineTo(x + 30, bodyY + 50);
-    ctx.stroke();
-  }
+  // 手と吹き出しは drawCpuOverlay で全員の体の上に描く（他キャラの後ろに隠れないように）
 
   // 頭
-  ctx.fillStyle = lost ? "#999" : "#ffe3c2";
+  const hr = 27 * s;
+  const hg = ctx.createRadialGradient(x - 8 * s, headY - 8 * s, 4, x, headY, hr * 1.3);
+  hg.addColorStop(0, "#ffe8cf");
+  hg.addColorStop(1, SKIN_DARK);
+  ctx.fillStyle = hg;
   ctx.beginPath();
-  ctx.arc(x, headY, 30, 0, Math.PI * 2);
+  ctx.arc(x, headY, hr, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 左右の席は中央（こちら側）を向いた斜め顔にする: 顔パーツを中央寄りにずらす
+  const fdir = idx === 1 ? 1 : idx === 3 ? -1 : 0;
+  const fs = fdir * 8 * s;
+
+  // 髪（頭の中心に揃える。顔パーツのみずらして向きを出す）
+  ctx.fillStyle = shade(c.color, -0.5);
+  ctx.beginPath();
+  ctx.arc(x, headY - 2 * s, hr, Math.PI * 1.05, Math.PI * 1.95);
+  ctx.quadraticCurveTo(x + hr, headY - hr * 0.6, x + hr * 0.8, headY - hr * 0.3);
   ctx.fill();
 
   // 顔
-  ctx.fillStyle = "#222";
-  if (lost) {
-    ctx.font = "bold 20px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("×  ×", x, headY - 4);
+  const blink = ((now + idx * 0.93) % 3.4) < 0.13;
+  ctx.fillStyle = "#2a2520";
+  if (blink) {
+    ctx.lineWidth = 2 * s;
+    ctx.strokeStyle = "#2a2520";
     ctx.beginPath();
-    ctx.arc(x, headY + 12, 6, 0, Math.PI * 2);
+    ctx.moveTo(x - 13 * s + fs, headY - 2 * s);
+    ctx.lineTo(x - 6 * s + fs, headY - 2 * s);
+    ctx.moveTo(x + 6 * s + fs, headY - 2 * s);
+    ctx.lineTo(x + 13 * s + fs, headY - 2 * s);
+    ctx.stroke();
+  } else {
+    // 斜め顔は外側の目を少し小さくして立体感を出す
+    const inner = 3.2 * s;
+    const outer = fdir === 0 ? 3.2 * s : 2.6 * s;
+    const leftR = fdir === 1 ? outer : inner;
+    const rightR = fdir === -1 ? outer : inner;
+    ctx.beginPath();
+    ctx.arc(x - 9 * s + fs, headY - 2 * s, leftR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + 9 * s + fs, headY - 2 * s, rightR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // ほっぺ
+  ctx.fillStyle = "rgba(255, 120, 120, 0.18)";
+  ctx.beginPath();
+  ctx.arc(x - 16 * s + fs, headY + 7 * s, 5 * s, 0, Math.PI * 2);
+  ctx.arc(x + 16 * s + fs, headY + 7 * s, 5 * s, 0, Math.PI * 2);
+  ctx.fill();
+  // 口
+  ctx.fillStyle = "#2a2520";
+  const talking = anim && (anim.type === "point" || anim.type === "haihai");
+  ctx.beginPath();
+  if (talking) {
+    ctx.arc(x + fs, headY + 11 * s, 6 * s, 0, Math.PI * 2);
     ctx.fill();
   } else {
-    ctx.beginPath();
-    ctx.arc(x - 10, headY - 4, 3.5, 0, Math.PI * 2);
-    ctx.arc(x + 10, headY - 4, 3.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    const mouthOpen = anim && (anim.type === "point" || anim.type === "haihai");
-    if (mouthOpen) {
-      ctx.arc(x, headY + 10, 7, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.arc(x, headY + 8, 8, 0.2 * Math.PI, 0.8 * Math.PI);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "#222";
-      ctx.stroke();
-    }
+    ctx.strokeStyle = "#2a2520";
+    ctx.lineWidth = 2.5 * s;
+    ctx.arc(x + fs, headY + 8 * s, 7 * s, 0.2 * Math.PI, 0.8 * Math.PI);
+    ctx.stroke();
   }
 
-  // 名前
-  ctx.fillStyle = lost ? "#aaa" : "#fff";
-  ctx.font = "bold 16px sans-serif";
+  // 名前プレート
+  ctx.font = `bold ${Math.round(14 * s)}px sans-serif`;
+  const nw = ctx.measureText(c.name).width + 18 * s;
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  rrect(x - nw / 2, y + 100 * s, nw, 22 * s, 11 * s);
+  ctx.fill();
+  ctx.fillStyle = isTurn ? "#ffd95e" : "#e8e4f5";
   ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillText(c.name, x, y + 92);
+  ctx.textBaseline = "middle";
+  ctx.fillText(c.name, x, y + 111 * s);
+}
 
-  // プレイヤーのキー表示
-  if (c.keyHint && G.mode !== "gameover") {
-    ctx.fillStyle = "#ffd95e";
-    ctx.font = "bold 14px sans-serif";
-    ctx.fillText(c.keyHint, x, y - 96 + bob);
+function animStart(anim) {
+  return anim.start !== undefined ? anim.start : anim.until - 0.4;
+}
+
+// CPUの手と吹き出し（最前面パス）。体の描画とbobの計算を揃えること
+function drawCpuOverlay(G, idx, now) {
+  const c = G.chars[idx];
+  const anim = c.anim;
+  if (!anim) return;
+  const { x, y, s } = CPU_POS[idx];
+  const bob = -4 * s * Math.abs(Math.sin(G.beatPhase * Math.PI));
+  const headY = y + bob;
+  const bodyTop = y + 26 * s + bob;
+
+  ctx.lineCap = "round";
+  if (anim.type === "point") {
+    const p = easeOut(clamp01((now - animStart(anim)) / 0.13));
+    for (const tIdx of anim.targets) {
+      drawCpuPointGlove(G, idx, tIdx, p, bodyTop);
+    }
+    drawBubble(x, headY - 44 * s, "三郎！", s);
+  } else if (anim.type === "haihai") {
+    const sway = Math.sin(now * 18) * 9 * s;
+    drawFistGlove(x - 42 * s, headY - 2 * s + sway, 12 * s, c.color);
+    drawFistGlove(x + 42 * s, headY - 2 * s - sway, 12 * s, c.color);
+    drawBubble(x, headY - 44 * s, "ハイハイ", s);
   }
 }
 
+// CPUの指差し: プレイヤーと同じ浮き手袋。カメラ（プレイヤー）に向かう時だけ
+// 手前に近づくぶん大きくなる。それ以外の形は完全に共通
+function drawCpuPointGlove(G, idx, targetIdx, p, bodyTop) {
+  const { x, s } = CPU_POS[idx];
+  const c = G.chars[idx];
+  const tp = TARGET_POS[targetIdx];
+  const side = tp.x >= x ? 1 : -1;
+  const rest = { x: x + side * 42 * s, y: bodyTop + 6 * s };
+  const hx = lerp(rest.x, tp.x, 0.35 * p);
+  const hy = lerp(rest.y, tp.y, 0.35 * p);
+  const grow = targetIdx === 0 ? 1 + 1.1 * p : 1;
+  const r = 13 * s * grow;
+  const dx = tp.x - hx;
+  const dy = tp.y - hy;
+  const len = Math.hypot(dx, dy) || 1;
+  drawPointingGlove(hx, hy, dx / len, dy / len, r, c.color);
+}
+
+// ---------- 自分の手（一人称） ----------
+
+function drawPlayerHands(G, now) {
+  const anim = G.chars[0].anim;
+  const bob = 3 * Math.abs(Math.sin(G.beatPhase * Math.PI));
+
+  if (anim && anim.type === "point") {
+    // 指差し: 手袋が対象の方へ少しだけ進んで指す（伸ばしすぎない）
+    const p = easeOut(clamp01((now - animStart(anim)) / 0.12));
+    const targets = anim.targets.slice().sort((a, b) => TARGET_POS[a].x - TARGET_POS[b].x);
+    const hands = targets.length === 2 ? ["left", "right"] : [targets[0] === 1 ? "left" : "right"];
+    for (let i = 0; i < targets.length; i++) {
+      drawPointGlove(HAND_REST[hands[i]], TARGET_POS[targets[i]], p);
+    }
+    drawBubble(240, 660, "三郎！", 1.15);
+  } else if (anim && anim.type === "haihai") {
+    // ハイハイ: 両拳を持ち上げて振る
+    const sway = Math.sin(now * 18) * 12;
+    drawFistGlove(192, 688 + sway);
+    drawFistGlove(288, 688 - sway);
+    drawBubble(240, 640, "ハイハイ", 1.15);
+  } else {
+    // 待機: 浮いている両手
+    drawRestGlove(HAND_REST.left.x, HAND_REST.left.y + bob);
+    drawRestGlove(HAND_REST.right.x, HAND_REST.right.y + bob);
+  }
+
+  // 自分の番の合図
+  if (G.mode === "play" && G.turnActor === 0 && (!anim || anim.type !== "point")) {
+    const a = 0.65 + 0.35 * Math.sin(now * 8);
+    ctx.fillStyle = `rgba(255, 217, 94, ${a})`;
+    ctx.font = "bold 26px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("きみの番！", 240, 660);
+  }
+}
+
+// デフォルメした浮き手袋（胴体・腕なし）。白手袋+赤いカフス
+const GLOVE_OUTLINE = "#332b3d";
+
+// 手袋のグラデーションを作る（ローカル座標で使う）
+function gloveGrad(r) {
+  const g = ctx.createRadialGradient(-r * 0.3, -r * 0.5, r * 0.2, 0, 0, r * 2.3);
+  g.addColorStop(0, "#ffffff");
+  g.addColorStop(1, "#d4cede");
+  return g;
+}
+
+// 複数パーツを「ひとつのシルエット」として描く: 先に太い輪郭で全パーツを
+// なぞり、上から塗りつぶすと内側の線が消えて外周だけが残る
+function unionFill(parts, fill, lw) {
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw * 2;
+  for (const p of parts) { p(); ctx.stroke(); }
+  ctx.fillStyle = fill;
+  for (const p of parts) { p(); ctx.fill(); }
+}
+
+// 指差し手袋（マスターハンド風デフォルメ: 太い人差し指＋丸い拳）。
+// プレイヤーもCPUもこれを使う。+x方向を指すローカル座標で描いて回転させる
+function drawPointingGlove(hx, hy, ux, uy, r, cuffColor) {
+  ctx.save();
+  ctx.translate(hx, hy);
+  ctx.rotate(Math.atan2(uy, ux));
+  const lw = Math.max(2, r * 0.12);
+  const g = gloveGrad(r);
+
+  // カフス（手首側、手の後ろに敷く）
+  ctx.fillStyle = cuffColor;
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw;
+  rrect(-r * 1.7, -r * 0.62, r * 0.85, r * 1.24, r * 0.25);
+  ctx.fill();
+  ctx.stroke();
+
+  // 手の本体（丸い拳＋太い人差し指＋親指のこぶ）を1シルエットで
+  unionFill([
+    () => rrect(-r * 1.1, -r * 0.85, r * 1.8, r * 1.7, r * 0.6),
+    () => rrect(r * 0.1, -r * 0.72, r * 2.0, r * 0.62, r * 0.31),
+    () => { ctx.beginPath(); ctx.arc(-r * 0.15, -r * 0.92, r * 0.34, 0, Math.PI * 2); },
+  ], g, lw);
+
+  // 指の付け根の溝（1本だけ、控えめに）
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw * 0.8;
+  ctx.beginPath();
+  ctx.moveTo(r * 0.42, -r * 0.1);
+  ctx.quadraticCurveTo(r * 0.62, r * 0.25, r * 0.42, r * 0.6);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// 待機の手（ミトン風デフォルメ: 丸い甲＋指4本は溝線だけで表現、親指は内側）
+function drawRestGlove(x, y) {
+  const r = 24;
+  const m = x < 240 ? 1 : -1; // 親指を画面中央側に向けるための左右反転
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(m, 1);
+  const lw = Math.max(2, r * 0.12);
+  const g = gloveGrad(r);
+
+  // カフス
+  ctx.fillStyle = "#e8554d";
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw;
+  rrect(-r * 0.95, r * 0.55, r * 1.9, r * 0.85, r * 0.3);
+  ctx.fill();
+  ctx.stroke();
+
+  // 甲＋指先のふくらみ＋親指を1シルエットで（指は長く出さない）
+  unionFill([
+    () => rrect(-r * 1.0, -r * 0.7, r * 2.0, r * 1.45, r * 0.5),
+    () => rrect(-r * 0.95, -r * 1.15, r * 1.9, r * 1.0, r * 0.48),
+    () => { ctx.beginPath(); ctx.arc(r * 0.95, r * 0.25, r * 0.36, 0, Math.PI * 2); },
+  ], g, lw);
+
+  // 指の溝線3本（上端から短く）
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw * 0.8;
+  for (const fx of [-0.48, 0, 0.48]) {
+    ctx.beginPath();
+    ctx.moveTo(fx * r, -r * 1.13);
+    ctx.lineTo(fx * r, -r * 0.6);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawPointGlove(rest, target, p) {
+  // 控えめに対象へ寄る（最大30%）。奥に行くぶん少しだけ小さく
+  const hx = lerp(rest.x, target.x, 0.3 * p);
+  const hy = lerp(rest.y, target.y, 0.32 * p);
+  const r = 24 * (1 - 0.2 * p);
+  const dx = target.x - hx;
+  const dy = target.y - hy;
+  const len = Math.hypot(dx, dy) || 1;
+  drawPointingGlove(hx, hy, dx / len, dy / len, r, "#e8554d");
+}
+
+// 拳（丸いげんこつ＋こぶし山は上端の波で表現）
+function drawFistGlove(x, y, r = 24, color = "#e8554d") {
+  ctx.save();
+  ctx.translate(x, y);
+  const lw = Math.max(2, r * 0.12);
+  const g = gloveGrad(r);
+
+  // カフス
+  ctx.fillStyle = color;
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw;
+  rrect(-r * 0.9, r * 0.55, r * 1.8, r * 0.85, r * 0.3);
+  ctx.fill();
+  ctx.stroke();
+
+  // 拳本体（丸ごと1シルエット。こぶし山は上端の波で表現）
+  unionFill([
+    () => rrect(-r * 1.0, -r * 0.85, r * 2.0, r * 1.65, r * 0.55),
+    () => { ctx.beginPath(); ctx.arc(-r * 0.5, -r * 0.78, r * 0.3, 0, Math.PI * 2); },
+    () => { ctx.beginPath(); ctx.arc(0, -r * 0.84, r * 0.3, 0, Math.PI * 2); },
+    () => { ctx.beginPath(); ctx.arc(r * 0.5, -r * 0.78, r * 0.3, 0, Math.PI * 2); },
+  ], g, lw);
+
+  // こぶしの溝線
+  ctx.strokeStyle = GLOVE_OUTLINE;
+  ctx.lineWidth = lw * 0.8;
+  for (const fx of [-0.27, 0.27]) {
+    ctx.beginPath();
+    ctx.moveTo(fx * r, -r * 0.95);
+    ctx.lineTo(fx * r, -r * 0.55);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// 自分が指されている瞬間の警告表示
+function playerIsTargeted(G) {
+  for (let i = 1; i <= 3; i++) {
+    const a = G.chars[i].anim;
+    if (a && a.type === "point" && a.targets.includes(0)) return true;
+  }
+  return false;
+}
+
+// ---------- ビート・HUD ----------
+
 function drawBeatRing(G) {
-  // 画面中央のビートインジケーター
-  const cx = W / 2;
-  const cy = H / 2 - 20;
-  const p = G.beatPhase; // 0=拍の瞬間
-  const r = 22 + 26 * p;
+  const cx = 240;
+  const cy = 597;
+  const p = G.beatPhase;
   ctx.strokeStyle = `rgba(255, 217, 94, ${1 - p * 0.85})`;
   ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, (20 + 30 * p) * 1.4, 20 + 30 * p, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.fillStyle = "#ffd95e";
+  ctx.shadowColor = "#ffd95e";
+  ctx.shadowBlur = 12;
   ctx.beginPath();
-  ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, 11, 8, 0, 0, Math.PI * 2);
   ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
 }
 
 function drawHUD(G) {
-  ctx.fillStyle = "#9aa3c0";
-  ctx.font = "14px sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(`難易度: ${G.diff.label}　BPM: ${G.diff.bpm}`, 16, 26);
-  ctx.textAlign = "right";
-  ctx.fillText(`${Math.max(0, G.survived)} 拍`, W - 16, 26);
+  // スコア
   ctx.textAlign = "center";
-  ctx.fillText("A: 左　W: 正面　D: 右　(2キー同時=同時指し / Space: ハイハイ)", W / 2, H - 14);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 44px sans-serif";
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 6;
+  ctx.fillText(`${G.score} 拍`, 240, 56);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  ctx.font = "13px sans-serif";
+  ctx.fillStyle = "#9aa3c0";
+  ctx.textAlign = "left";
+  ctx.fillText(`${G.diff.label}　BPM ${G.bpmNow}`, 14, 24);
+  ctx.textAlign = "right";
+  ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, W - 14, 24);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
+  ctx.font = "12px sans-serif";
+  ctx.fillText("A:左　W:正面　D:右　2キー同時=2人指し(+2拍)　Space:ハイハイ", 240, 793);
 }
 
+// ---------- 画面 ----------
+
 function drawTitle(G, now) {
-  ctx.fillStyle = "#fff";
+  drawStage(now);
+  drawVignette();
+
   ctx.textAlign = "center";
-  ctx.font = "bold 72px sans-serif";
-  ctx.fillText("三郎ゲーム", W / 2, 150);
+  ctx.fillStyle = "#ffd95e";
+  ctx.shadowColor = "rgba(255, 180, 60, 0.6)";
+  ctx.shadowBlur = 24;
+  ctx.font = "bold 78px sans-serif";
+  ctx.fillText("三郎", 240, 140);
+  ctx.font = "bold 34px sans-serif";
+  ctx.fillText("ゲーム", 240, 188);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
 
-  ctx.font = "16px sans-serif";
   ctx.fillStyle = "#c5cce6";
+  ctx.font = "14px sans-serif";
   const lines = [
-    "リズムに乗って「三郎」と指を差し合うゲーム。",
-    "指されたら次の拍で A(左) / W(正面) / D(右) で誰かを指せ。",
-    "2キー同時押しで2人同時指し（連続2回まで）。",
+    "リズムに乗って「三郎」と指を差し合う。",
+    "指されたら次の拍で A(左) / W(正面) / D(右)。",
+    "2キー同時押しで2人指し: 成功すると +2拍。",
     "同時指しされたら Space で「ハイハイ」。",
-    "リズムを外したら負け。",
+    "CPUはミスしない。きみが外すまで何拍続く？",
   ];
-  lines.forEach((t, i) => ctx.fillText(t, W / 2, 220 + i * 28));
+  lines.forEach((t, i) => ctx.fillText(t, 240, 240 + i * 24));
 
-  // 難易度選択
+  // 難易度カード
   const keys = Object.keys(DIFFICULTIES);
   keys.forEach((k, i) => {
     const d = DIFFICULTIES[k];
-    const x = W / 2 + (i - 1) * 200;
-    const y = 420;
+    const y = 400 + i * 86;
     const sel = G.difficulty === k;
-    ctx.fillStyle = sel ? "#ffd95e" : "#39405c";
-    drawRoundRect(x - 80, y - 28, 160, 56, 12);
+    ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
+    ctx.shadowColor = sel ? "rgba(255, 200, 80, 0.5)" : "rgba(0,0,0,0.4)";
+    ctx.shadowBlur = sel ? 18 : 8;
+    rrect(70, y, 340, 70, 14);
     ctx.fill();
-    ctx.fillStyle = sel ? "#222" : "#c5cce6";
-    ctx.font = "bold 20px sans-serif";
-    ctx.fillText(`${i + 1}. ${d.label}`, x, y + 7);
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = sel ? "#222" : "#e8e4f5";
+    ctx.font = "bold 22px sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(`${i + 1}. ${d.label}`, 92, y + 30);
+    ctx.font = "13px sans-serif";
+    ctx.fillStyle = sel ? "rgba(40,30,0,0.75)" : "#9aa3c0";
+    ctx.fillText(`BPM ${d.bpm}〜 上限なし`, 92, y + 54);
+    ctx.textAlign = "right";
+    ctx.fillText(`ベスト ${G.bests[k]} 拍`, 388, y + 54);
   });
 
-  ctx.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * Math.sin(now * 3)})`;
-  ctx.font = "bold 22px sans-serif";
-  ctx.fillText("1 / 2 / 3 で難易度を選んで、好きなキーでスタート", W / 2, 520);
+  ctx.textAlign = "center";
+  ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
+  ctx.font = "bold 18px sans-serif";
+  ctx.fillText("1 / 2 / 3 で難易度 — 好きなキーでスタート", 240, 720);
+}
+
+function drawGameOver(G) {
+  ctx.fillStyle = "rgba(15, 13, 22, 0.78)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 30;
+  rrect(50, 230, 380, 320, 20);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#e8554d";
+  ctx.font = "bold 34px sans-serif";
+  ctx.fillText("リズムが止まった！", 240, 292);
+  ctx.fillStyle = "#c5cce6";
+  ctx.font = "16px sans-serif";
+  ctx.fillText(G.loseReason, 240, 326);
+
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 64px sans-serif";
+  ctx.fillText(`${G.score} 拍`, 240, 420);
+
+  if (G.newBest) {
+    ctx.fillStyle = "#ffd95e";
+    ctx.font = "bold 22px sans-serif";
+    ctx.fillText("ベスト更新！", 240, 460);
+  } else {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = "16px sans-serif";
+    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 拍`, 240, 460);
+  }
+
+  ctx.fillStyle = "#ffd95e";
+  ctx.font = "bold 19px sans-serif";
+  ctx.fillText("R: もう一度　/　T: タイトルへ", 240, 520);
 }
 
 function drawIntro(G) {
   ctx.fillStyle = "#ffd95e";
-  ctx.font = "bold 36px sans-serif";
+  ctx.font = "bold 32px sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText(G.introText || "", W / 2, H / 2 - 90);
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 8;
+  ctx.fillText(G.introText || "", 240, 170);
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
 }
 
-function drawGameOver(G) {
-  ctx.fillStyle = "rgba(20, 22, 32, 0.78)";
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = "center";
-  const playerLost = G.loser === 0;
-  ctx.fillStyle = playerLost ? "#e8554d" : "#6fe87a";
-  ctx.font = "bold 56px sans-serif";
-  ctx.fillText(playerLost ? "あなたの負け…" : "あなたの勝ち！", W / 2, 220);
-  ctx.fillStyle = "#fff";
-  ctx.font = "20px sans-serif";
-  ctx.fillText(G.loseReason || "", W / 2, 280);
-  ctx.fillStyle = "#c5cce6";
-  ctx.fillText(`生き残った拍数: ${G.survived}`, W / 2, 330);
-  ctx.font = "bold 22px sans-serif";
-  ctx.fillStyle = "#ffd95e";
-  ctx.fillText("R: もう一度　/　T: タイトルへ", W / 2, 410);
+// 色を明るく/暗くする（amt: -1〜1）
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  let r = (n >> 16) & 255;
+  let g = (n >> 8) & 255;
+  let b = n & 255;
+  if (amt < 0) {
+    r = Math.round(r * (1 + amt));
+    g = Math.round(g * (1 + amt));
+    b = Math.round(b * (1 + amt));
+  } else {
+    r = Math.round(r + (255 - r) * amt);
+    g = Math.round(g + (255 - g) * amt);
+    b = Math.round(b + (255 - b) * amt);
+  }
+  return `rgb(${r},${g},${b})`;
 }
 
 // メイン描画。game.js から毎フレーム呼ばれる
 function render(G, now) {
-  ctx.clearRect(0, 0, W, H);
-
   if (G.mode === "title") {
     drawTitle(G, now);
     return;
   }
 
-  if (G.mode === "play" || G.mode === "intro" || G.mode === "gameover") {
-    drawBeatRing(G);
-    for (let i = 0; i < G.chars.length; i++) drawChar(G, i, now);
-    drawHUD(G);
-  }
+  drawStage(now);
+  drawBeatRing(G);
+  for (let i = 1; i <= 3; i++) drawCpu(G, i, now);
+  for (let i = 1; i <= 3; i++) drawCpuOverlay(G, i, now);
+  drawVignette(playerIsTargeted(G) ? 1 : 0);
+  drawPlayerHands(G, now);
+  drawHUD(G);
+
   if (G.mode === "intro") drawIntro(G);
   if (G.mode === "gameover") drawGameOver(G);
 }
