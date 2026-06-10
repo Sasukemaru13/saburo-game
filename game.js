@@ -69,6 +69,9 @@ async function initAudio() {
     return;
   }
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // iOS Safariはsuspended状態で生成されることがあり、resumeしないと
+  // currentTimeが進まず進行が止まる（ジェスチャー内で呼ぶこと）
+  if (audioCtx.state === "suspended") audioCtx.resume();
   for (const name of ["saburo", "haihai"]) {
     buffers[name] = await audioCtx.decodeAudioData(base64ToArrayBuffer(AUDIO_DATA[name]));
   }
@@ -420,6 +423,11 @@ function loop(ts) {
 
 // ---------- 入力（キーボード・タッチ共通ロジック） ----------
 
+// タブ切替などでiOSが音声を止めた場合の復帰（進行は音声時計基準なので必須）
+function ensureAudioRunning() {
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+}
+
 // 指差し入力（target: 1=左 2=正面 3=右）
 function handlePointInput(target, t) {
   const ev = round.event;
@@ -451,6 +459,7 @@ function handleHaihaiInput(t) {
 
 window.addEventListener("keydown", (e) => {
   if (e.repeat) return;
+  ensureAudioRunning();
   const key = e.key.toLowerCase();
 
   if (G.mode === "title") {
@@ -540,6 +549,7 @@ function handleTapUI(pos) {
 
 canvas.addEventListener("touchstart", (e) => {
   e.preventDefault();
+  ensureAudioRunning();
   const touches = Array.from(e.changedTouches).map(canvasPos);
   if (touches.length === 0) return;
   if (handleTapUI(touches[0])) return;
