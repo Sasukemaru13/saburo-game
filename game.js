@@ -63,26 +63,75 @@ function base64ToArrayBuffer(b64) {
   return bytes.buffer;
 }
 
-async function initAudio() {
-  if (audioCtx) {
-    if (audioCtx.state === "suspended") await audioCtx.resume();
-    return;
+// AudioContextの生成とiOSアンロックだけを行う（ジェスチャー内で呼ぶこと）。
+// タイトルのUI効果音はボイスのデコードを待たずにこれだけで鳴らせる
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // iOS Safariはsuspended状態で生成されることがあり、resumeしないと
+    // currentTimeが進まず進行が止まる
+    if (audioCtx.state === "suspended") audioCtx.resume();
+    // ジェスチャー内で無音を即再生してiOSの音声を確実にアンロックする
+    const unlock = audioCtx.createBufferSource();
+    unlock.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+    unlock.connect(audioCtx.destination);
+    unlock.start(0);
+  } else if (audioCtx.state === "suspended") {
+    audioCtx.resume();
   }
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // iOS Safariはsuspended状態で生成されることがあり、resumeしないと
-  // currentTimeが進まず進行が止まる（ジェスチャー内で呼ぶこと）
-  if (audioCtx.state === "suspended") audioCtx.resume();
-  // ジェスチャー内で無音を即再生してiOSの音声を確実にアンロックする
-  // （この後のデコードはawaitでジェスチャー外になるため、ここでやるしかない）
-  const unlock = audioCtx.createBufferSource();
-  unlock.buffer = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
-  unlock.connect(audioCtx.destination);
-  unlock.start(0);
+}
+
+async function initAudio() {
+  ensureAudioCtx();
+  if (buffers.saburo) return; // デコード済み（UI効果音が先にctxを作っていても通る）
   for (const name of ["saburo", "haihai"]) {
     buffers[name] = await audioCtx.decodeAudioData(base64ToArrayBuffer(AUDIO_DATA[name]));
   }
   clapBuffer = makeClapBuffer();
   tickBuffer = makeTickBuffer();
+}
+
+// ---------- UI効果音（メニュー操作のポップ音） ----------
+
+// 短く上に跳ねる「ピョッ」。freqで音程を変えられる
+function playUiPop(freq = 760, vol = 0.16) {
+  ensureAudioCtx();
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(freq, t);
+  osc.frequency.exponentialRampToValueAtTime(freq * 1.6, t + 0.06);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+  osc.connect(g).connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.14);
+}
+
+// スタート用の2音「ピポッ↑」
+function playUiStart() {
+  ensureAudioCtx();
+  const t = audioCtx.currentTime;
+  [[660, 0], [990, 0.07]].forEach(([freq, dt]) => {
+    const osc = audioCtx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t + dt);
+    g.gain.exponentialRampToValueAtTime(0.2, t + dt + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
+    osc.connect(g).connect(audioCtx.destination);
+    osc.start(t + dt);
+    osc.stop(t + dt + 0.13);
+  });
+}
+
+// 難易度ごとに音程を変える（やさしい→むずかしいで高くなる）
+function playUiSelect(difficultyKey) {
+  const i = Object.keys(DIFFICULTIES).indexOf(difficultyKey);
+  playUiPop(620 * Math.pow(1.22, Math.max(0, i)));
 }
 
 // 手拍子は毎回生成すると音量がばらつくので、1回だけ作ってピークを揃えて使い回す
@@ -168,6 +217,7 @@ let startingRound = false;
 async function startRound() {
   if (startingRound) return; // 連打・タップとキーの二重スタート防止
   startingRound = true;
+  playUiStart(); // デコード待ちの間も即フィードバック
   try {
     await initAudio();
   } finally {
@@ -437,10 +487,14 @@ let lastClockValue = -1;
 let lastClockMoveTs = 0;
 
 function loop(ts) {
+  // 監視はゲーム進行中だけ。title/howto/gameoverで有効にすると、
+  // 止まった時計を検知した次のタップがhardResetAudio→startRoundになり
+  // メニュー操作のつもりが勝手にゲームが始まってしまう
+  const inGame = G.mode === "intro" || G.mode === "play";
   if (audioCtx) {
     G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
     // iOS既知バグの見張り: stateがrunningのまま時計が0.4秒以上進まないなら壊れている
-    if (G.mode !== "title") {
+    if (inGame) {
       if (G.now !== lastClockValue) {
         lastClockValue = G.now;
         lastClockMoveTs = ts;
@@ -453,7 +507,7 @@ function loop(ts) {
     }
   }
   // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる
-  G.audioStalled = !!(audioCtx && G.mode !== "title" && (audioCtx.state !== "running" || G.clockStuck));
+  G.audioStalled = !!(audioCtx && inGame && (audioCtx.state !== "running" || G.clockStuck));
   update();
   render(G, ts / 1000);
   requestAnimationFrame(loop);
@@ -526,22 +580,22 @@ window.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
 
   if (G.mode === "title") {
-    if (key === "1") { G.difficulty = "easy"; return; }
-    if (key === "2") { G.difficulty = "normal"; return; }
-    if (key === "3") { G.difficulty = "hard"; return; }
-    if (key === "h") { G.mode = "howto"; return; }
+    if (key === "1") { G.difficulty = "easy"; playUiSelect("easy"); return; }
+    if (key === "2") { G.difficulty = "normal"; playUiSelect("normal"); return; }
+    if (key === "3") { G.difficulty = "hard"; playUiSelect("hard"); return; }
+    if (key === "h") { openHowto(); return; }
     startRound();
     return;
   }
 
   if (G.mode === "howto") {
-    G.mode = "title";
+    closeHowto();
     return;
   }
 
   if (G.mode === "gameover") {
     if (key === "r") startRound();
-    if (key === "t") G.mode = "title";
+    if (key === "t") { G.mode = "title"; playUiPop(); }
     return;
   }
 
@@ -562,9 +616,14 @@ window.addEventListener("keydown", (e) => {
 
 function canvasPos(touch) {
   const rect = canvas.getBoundingClientRect();
+  // 要素の箱が480:800比でなくても（object-fit等のレターボックス）、
+  // 実際の描画域を逆算して座標を合わせる
+  const scale = Math.min(rect.width / W, rect.height / H);
+  const ox = rect.left + (rect.width - W * scale) / 2;
+  const oy = rect.top + (rect.height - H * scale) / 2;
   return {
-    x: (touch.clientX - rect.left) * (W / rect.width),
-    y: (touch.clientY - rect.top) * (H / rect.height),
+    x: (touch.clientX - ox) / scale,
+    y: (touch.clientY - oy) / scale,
   };
 }
 
@@ -600,23 +659,41 @@ function hitDifficulty(p) {
   return null;
 }
 
+// 開いた直後の連打タップで即閉じてしまい「反応してない」ように見えるのを防ぐ
+let howtoOpenedAt = 0;
+
+function openHowto() {
+  G.mode = "howto";
+  howtoOpenedAt = performance.now();
+  playUiPop(540);
+}
+
+function closeHowto() {
+  if (performance.now() - howtoOpenedAt < 250) return;
+  G.mode = "title";
+  playUiPop(540);
+}
+
 function handleTapUI(pos) {
   if (G.mode === "title") {
     const card = hitDifficulty(pos);
     const s = TITLE_UI.start;
     const h = TITLE_UI.howto;
-    if (card) G.difficulty = card;
+    if (card) {
+      G.difficulty = card;
+      playUiSelect(card);
+    }
     else if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
-    else if (inRect(pos, h.x, h.y, h.w, h.h)) G.mode = "howto";
+    else if (inRect(pos, h.x, h.y, h.w, h.h)) openHowto();
     return true;
   }
   if (G.mode === "howto") {
-    G.mode = "title";
+    closeHowto();
     return true;
   }
   if (G.mode === "gameover") {
     if (inRect(pos, 120, 462, 240, 52)) startRound();
-    else if (inRect(pos, 160, 524, 160, 34)) G.mode = "title";
+    else if (inRect(pos, 160, 524, 160, 34)) { G.mode = "title"; playUiPop(); }
     return true;
   }
   return false;

@@ -14,8 +14,9 @@ html, body {
 #game {
   border-radius: 10px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
-  height: 96vh;
-  max-width: 96vw;
-  object-fit: contain;
+  /* object-fitのレターボックスは要素の箱と描画域がズレてタップ座標が狂うため使わない。
+     要素自体を480:800比のまま画面に収める（160vw = 96vw × 800/480） */
+  height: min(96vh, 160vw);
+  width: auto;
   touch-action: none;
 }
