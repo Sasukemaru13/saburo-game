@@ -690,7 +690,7 @@ function drawHowto(G, now) {
   ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
   ctx.shadowColor = "rgba(0,0,0,0.6)";
   ctx.shadowBlur = 30;
-  rrect(36, 90, 408, 590, 20);
+  rrect(36, 76, 408, 648, 20);
   ctx.fill();
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
@@ -698,7 +698,7 @@ function drawHowto(G, now) {
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd95e";
   ctx.font = F(28, 800);
-  ctx.fillText("あそびかた", 240, 142);
+  ctx.fillText("あそびかた", 240, 126);
 
   const section = (title, y) => {
     ctx.fillStyle = "#ffd95e";
@@ -710,19 +710,26 @@ function drawHowto(G, now) {
     ctx.fillStyle = "#e8e4f5";
     ctx.font = F(14);
     ctx.textAlign = "left";
-    lines.forEach((t, i) => ctx.fillText(t, 64, y + i * 24));
+    lines.forEach((t, i) => ctx.fillText(t, 64, y + i * 22));
   };
 
-  section("ルール", 184);
+  section("ルール", 164);
   body([
     "リズムに乗って「三郎」と指をさし合う。",
     "最初は自分の番。誰かをさしてスタート。",
     "さされたら、次の拍で誰かをさし返す。",
     "2人同時にさされたら「ハイハイ」で応える。",
     "リズムを外したら負け。CPUはミスしない。",
-  ], 212);
+  ], 192);
 
-  section("そうさ", 352);
+  section("同時さし", 318);
+  body([
+    "自分も2人を同時にさせる。",
+    "そのあとは、もう一度自分の番。",
+    "使えるのは連続2回まで。",
+  ], 346);
+
+  section("そうさ", 428);
   body(
     IS_TOUCH
       ? [
@@ -735,22 +742,20 @@ function drawHowto(G, now) {
           "同時さし … 2キー同時押し",
           "ハイハイ … Space",
         ],
-    380
+    456
   );
 
-  section("とくてん", 472);
+  section("とくてん", 538);
   body([
     "1拍ごとに 1点。",
     "同時さしは +2点（連続2回目は +1点）。",
-    "同時さしのあとは、もう一度自分の番。",
-    "同時さしを使えるのは連続2回まで。",
     "8拍ごとにどんどん速くなる。",
-  ], 500);
+  ], 566);
 
   ctx.textAlign = "center";
   ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
   ctx.font = F(16, 800);
-  ctx.fillText(IS_TOUCH ? "タップでもどる" : "好きなキーでもどる", 240, 640);
+  ctx.fillText(IS_TOUCH ? "タップでもどる" : "好きなキーでもどる", 240, 684);
 }
 
 function drawGameOver(G) {
