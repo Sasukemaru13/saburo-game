@@ -98,7 +98,11 @@ async function initAudio() {
 // ため、倍音のあるtriangleで太く・大きめに鳴らす
 function playUiPop(freq = 760, vol = 0.3) {
   ensureAudioCtx();
-  const t = audioCtx.currentTime;
+  // currentTimeは実際の再生ヘッドより遅れて見えるため、ちょうどに置くと
+  // エンベロープの頭が過去に落ちてアタックが欠け、減衰の尻尾だけの
+  // 「小さい変な音」がランダムに鳴る。少し未来に置いて回避する
+  const t = audioCtx.currentTime + 0.05;
+  dbg("pop" + Math.round(freq), t);
   const osc = audioCtx.createOscillator();
   osc.type = "triangle";
   osc.frequency.setValueAtTime(freq, t);
@@ -115,7 +119,8 @@ function playUiPop(freq = 760, vol = 0.3) {
 // スタート用の2音「ピポッ↑」
 function playUiStart() {
   ensureAudioCtx();
-  const t = audioCtx.currentTime;
+  const t = audioCtx.currentTime + 0.05; // playUiPopと同じ理由のリード
+  dbg("startJingle", t);
   [[660, 0], [990, 0.07]].forEach(([freq, dt]) => {
     const osc = audioCtx.createOscillator();
     osc.type = "triangle";
@@ -164,7 +169,36 @@ function makeTickBuffer() {
   return buf;
 }
 
+// ---------- 音声デバッグ表示（URLに ?debug を付けると有効） ----------
+// 各音のスケジュール時刻と再生ヘッドの差(Δ)を表示する。Δがほぼ0以下なら
+// エンベロープの頭が欠けて「小さい変な音」になっている証拠になる
+const DEBUG_AUDIO = location.search.includes("debug");
+let dbgEl = null;
+const dbgLines = [];
+function dbg(name, when) {
+  if (!DEBUG_AUDIO || !audioCtx) return;
+  if (!dbgEl) {
+    dbgEl = document.createElement("div");
+    dbgEl.style.cssText =
+      "position:fixed;left:4px;top:4px;z-index:9;color:#0f0;background:rgba(0,0,0,.75);" +
+      "font:11px monospace;padding:6px;pointer-events:none;white-space:pre";
+    document.body.appendChild(dbgEl);
+    setInterval(() => {
+      if (!audioCtx) return;
+      dbgEl.textContent =
+        `sr=${audioCtx.sampleRate} state=${audioCtx.state}\n` +
+        `base=${(audioCtx.baseLatency || 0).toFixed(3)} out=${(audioCtx.outputLatency || 0).toFixed(3)}\n` +
+        `ct=${audioCtx.currentTime.toFixed(2)}\n` +
+        "--- 直近の音 (Δ=先読み秒) ---\n" +
+        dbgLines.slice(-9).join("\n");
+    }, 200);
+  }
+  const d = when - audioCtx.currentTime;
+  dbgLines.push(`${name} Δ=${d.toFixed(3)}${d < 0.01 ? " ←頭欠けリスク" : ""}`);
+}
+
 function playVoice(name, pitch, when = 0, vol = 1.0) {
+  dbg("voice:" + name, Math.max(when, audioCtx.currentTime));
   const src = audioCtx.createBufferSource();
   src.buffer = buffers[name];
   src.playbackRate.value = pitch;
@@ -175,6 +209,7 @@ function playVoice(name, pitch, when = 0, vol = 1.0) {
 }
 
 function playClap(when, vol = 0.5) {
+  dbg("clap", when);
   const src = audioCtx.createBufferSource();
   src.buffer = clapBuffer;
   const bp = audioCtx.createBiquadFilter();
@@ -188,6 +223,7 @@ function playClap(when, vol = 0.5) {
 }
 
 function playTick(when) {
+  dbg("tick", when);
   const src = audioCtx.createBufferSource();
   src.buffer = tickBuffer;
   const g = audioCtx.createGain();
@@ -201,7 +237,7 @@ function playBuzzer() {
   osc.type = "square";
   osc.frequency.value = 110;
   const g = audioCtx.createGain();
-  const t = audioCtx.currentTime;
+  const t = audioCtx.currentTime + 0.05; // playUiPopと同じ理由のリード
   g.gain.setValueAtTime(0.25, t);
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
   osc.connect(g).connect(audioCtx.destination);
