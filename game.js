@@ -94,11 +94,13 @@ async function initAudio() {
 // ---------- UI効果音（メニュー操作のポップ音） ----------
 
 // 短く上に跳ねる「ピョッ」。freqで音程を変えられる
-function playUiPop(freq = 760, vol = 0.16) {
+// 正弦波は倍音がなくモニタースピーカーだと「うっすら鳴ってる」程度にしか聞こえない
+// ため、倍音のあるtriangleで太く・大きめに鳴らす
+function playUiPop(freq = 760, vol = 0.3) {
   ensureAudioCtx();
   const t = audioCtx.currentTime;
   const osc = audioCtx.createOscillator();
-  osc.type = "sine";
+  osc.type = "triangle";
   osc.frequency.setValueAtTime(freq, t);
   osc.frequency.exponentialRampToValueAtTime(freq * 1.6, t + 0.06);
   const g = audioCtx.createGain();
@@ -120,7 +122,7 @@ function playUiStart() {
     osc.frequency.value = freq;
     const g = audioCtx.createGain();
     g.gain.setValueAtTime(0.0001, t + dt);
-    g.gain.exponentialRampToValueAtTime(0.2, t + dt + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.32, t + dt + 0.01);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
     osc.connect(g).connect(audioCtx.destination);
     osc.start(t + dt);
@@ -257,7 +259,8 @@ function armRound() {
   round.phaseT = t0;
   round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: 0 };
   round.awaitingClock = false;
-  for (const b of INTRO_CLAPS) playClap(t0 + b * round.interval, 0.6);
+  // 1.2はバンドパスで削れる分の補償。声(1.0)と並んでも埋もれない音量にする
+  for (const b of INTRO_CLAPS) playClap(t0 + b * round.interval, 1.2);
   playTick(round.event.t);
 }
 
