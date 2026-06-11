@@ -414,7 +414,10 @@ function resolvePlayerHaihai(t) {
 // ---------- メインループ ----------
 
 function update() {
-  if (!round || !audioCtx || G.mode === "title" || G.mode === "gameover") return;
+  // 進行はゲーム中のみ（ホワイトリスト方式）。除外リスト方式だと新しい画面モードを
+  // 追加したときにすり抜けて、残っている古いroundが時間切れ→gameOverを誤発動する
+  // （例: howto画面を開いた瞬間に失敗音が鳴ってゲームオーバー画面に飛ぶバグ）
+  if (!round || !audioCtx || (G.mode !== "intro" && G.mode !== "play")) return;
   // 音声時計がまだ動いていなければ、動き出した瞬間に開始時刻を確定する
   if (round.awaitingClock) {
     if (audioCtx.state === "running") armRound();
