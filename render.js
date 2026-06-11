@@ -24,6 +24,10 @@ function F(size, weight = 700) {
 
 const IS_TOUCH = "ontouchstart" in window;
 
+// キャッシュバスター(?v=N)からバージョンを拾ってタイトルに表示する。
+// 「いま何が動いているか」を実機で確認できるようにするため
+const GAME_VERSION = (document.currentScript && (document.currentScript.src.match(/v=(\d+)/) || [])[1]) || "?";
+
 // CPUの座席（1=左 2=正面奥 3=右）。s は奥行きスケール
 const CPU_POS = {
   1: { x: 100, y: 415, s: 1.18 },
@@ -677,6 +681,11 @@ function drawTitle(G, now) {
   ctx.fillStyle = "#c5cce6";
   ctx.font = F(16, 800);
   ctx.fillText(IS_TOUCH ? "？ あそびかた" : "？ あそびかた (H)", h.x + h.w / 2, h.y + 26);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(154, 163, 192, 0.5)";
+  ctx.font = F(11);
+  ctx.fillText("v" + GAME_VERSION, 468, 790);
 }
 
 // あそびかた画面。タイトルの「？」から開く

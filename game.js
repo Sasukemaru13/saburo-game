@@ -93,46 +93,58 @@ async function initAudio() {
 
 // ---------- UI効果音（メニュー操作のポップ音） ----------
 
+// UI音はオシレーターのライブ合成だと環境によってアタックが欠け、
+// 減衰の尻尾だけの「小さい変な音」がランダムに鳴る（手拍子で同じ問題が出て
+// 波形の事前生成で解決した前例あり）。同じ方式で波形をバッファに焼いて再生する。
+// エンベロープも周波数チャープもサンプルに焼き込むので、再生時の自動化処理が一切ない
+const uiBuffers = {};
+
+function makeChirpBuffer(freq, ratio) {
+  const sr = audioCtx.sampleRate;
+  const n = Math.floor(sr * 0.13);
+  const buf = audioCtx.createBuffer(1, n, sr);
+  const d = buf.getChannelData(0);
+  const attack = sr * 0.006;
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    const f = freq * Math.pow(ratio, Math.min(1, i / (sr * 0.06)));
+    phase += (2 * Math.PI * f) / sr;
+    const tri = (2 / Math.PI) * Math.asin(Math.sin(phase)); // triangle波
+    const env = (i < attack ? i / attack : 1) * Math.exp(-Math.max(0, i - attack) / (sr * 0.028));
+    d[i] = tri * env;
+  }
+  return buf;
+}
+
+function playBuffer(buf, vol, when) {
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const g = audioCtx.createGain();
+  g.gain.value = vol;
+  src.connect(g).connect(audioCtx.destination);
+  src.start(when);
+}
+
 // 短く上に跳ねる「ピョッ」。freqで音程を変えられる
-// 正弦波は倍音がなくモニタースピーカーだと「うっすら鳴ってる」程度にしか聞こえない
-// ため、倍音のあるtriangleで太く・大きめに鳴らす
 function playUiPop(freq = 760, vol = 0.3) {
   ensureAudioCtx();
-  // currentTimeは実際の再生ヘッドより遅れて見えるため、ちょうどに置くと
-  // エンベロープの頭が過去に落ちてアタックが欠け、減衰の尻尾だけの
-  // 「小さい変な音」がランダムに鳴る。少し未来に置いて回避する
-  const t = audioCtx.currentTime + 0.05;
-  dbg("pop" + Math.round(freq), t);
-  const osc = audioCtx.createOscillator();
-  osc.type = "triangle";
-  osc.frequency.setValueAtTime(freq, t);
-  osc.frequency.exponentialRampToValueAtTime(freq * 1.6, t + 0.06);
-  const g = audioCtx.createGain();
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-  osc.connect(g).connect(audioCtx.destination);
-  osc.start(t);
-  osc.stop(t + 0.14);
+  const key = "pop" + Math.round(freq);
+  if (!uiBuffers[key]) uiBuffers[key] = makeChirpBuffer(freq, 1.6);
+  const t = audioCtx.currentTime + 0.05; // 再生ヘッドとのレース回避の先読み
+  dbg(key, t);
+  playBuffer(uiBuffers[key], vol, t);
 }
 
 // スタート用の2音「ピポッ↑」
 function playUiStart() {
   ensureAudioCtx();
-  const t = audioCtx.currentTime + 0.05; // playUiPopと同じ理由のリード
+  for (const f of [660, 990]) {
+    if (!uiBuffers["jingle" + f]) uiBuffers["jingle" + f] = makeChirpBuffer(f, 1);
+  }
+  const t = audioCtx.currentTime + 0.05;
   dbg("startJingle", t);
-  [[660, 0], [990, 0.07]].forEach(([freq, dt]) => {
-    const osc = audioCtx.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.value = freq;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.0001, t + dt);
-    g.gain.exponentialRampToValueAtTime(0.32, t + dt + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.11);
-    osc.connect(g).connect(audioCtx.destination);
-    osc.start(t + dt);
-    osc.stop(t + dt + 0.13);
-  });
+  playBuffer(uiBuffers.jingle660, 0.32, t);
+  playBuffer(uiBuffers.jingle990, 0.32, t + 0.07);
 }
 
 // 難易度ごとに音程を変える（やさしい→むずかしいで高くなる）
