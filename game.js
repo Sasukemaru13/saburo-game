@@ -529,7 +529,13 @@ window.addEventListener("keydown", (e) => {
     if (key === "1") { G.difficulty = "easy"; return; }
     if (key === "2") { G.difficulty = "normal"; return; }
     if (key === "3") { G.difficulty = "hard"; return; }
+    if (key === "h") { G.mode = "howto"; return; }
     startRound();
+    return;
+  }
+
+  if (G.mode === "howto") {
+    G.mode = "title";
     return;
   }
 
@@ -584,10 +590,12 @@ function hitZone(p) {
   return null;
 }
 
+// 当たり判定の矩形は render.js の TITLE_UI を共有（描画とのズレ防止）
 function hitDifficulty(p) {
   const keys = Object.keys(DIFFICULTIES);
   for (let i = 0; i < keys.length; i++) {
-    if (inRect(p, 70, 400 + i * 86, 340, 70)) return keys[i];
+    const r = TITLE_UI.pills[i];
+    if (inRect(p, r.x, r.y, r.w, r.h)) return keys[i];
   }
   return null;
 }
@@ -595,11 +603,15 @@ function hitDifficulty(p) {
 function handleTapUI(pos) {
   if (G.mode === "title") {
     const card = hitDifficulty(pos);
-    if (card) {
-      G.difficulty = card;
-    } else {
-      startRound();
-    }
+    const s = TITLE_UI.start;
+    const h = TITLE_UI.howto;
+    if (card) G.difficulty = card;
+    else if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
+    else if (inRect(pos, h.x, h.y, h.w, h.h)) G.mode = "howto";
+    return true;
+  }
+  if (G.mode === "howto") {
+    G.mode = "title";
     return true;
   }
   if (G.mode === "gameover") {

@@ -576,77 +576,179 @@ function drawHUD(G) {
 
 // ---------- 画面 ----------
 
+// タイトル画面のUI当たり判定。game.js のタップ判定もこれを参照する（二重定義によるズレ防止）
+const TITLE_UI = {
+  pills: [
+    { x: 32, y: 468, w: 132, h: 54 },
+    { x: 174, y: 468, w: 132, h: 54 },
+    { x: 316, y: 468, w: 132, h: 54 },
+  ],
+  start: { x: 110, y: 584, w: 260, h: 62 },
+  howto: { x: 150, y: 682, w: 180, h: 40 },
+};
+
 function drawTitle(G, now) {
   drawStage(now);
   drawVignette();
+
+  // ロゴ: でかい指さし手（ふわふわ浮かせる）。
+  // 真上向きは中指を立てているように見えるため、斜め上をさす
+  const handX = 220;
+  const handY = 172 + Math.sin(now * 1.6) * 6;
+  const glow = ctx.createRadialGradient(handX, handY, 10, handX, handY, 150);
+  glow.addColorStop(0, "rgba(255, 215, 110, 0.22)");
+  glow.addColorStop(1, "rgba(255, 215, 110, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(handX, handY, 150, 0, Math.PI * 2);
+  ctx.fill();
+  drawPointingGlove(handX, handY, 0.85, -1, 52, "#e8554d");
 
   ctx.textAlign = "center";
   ctx.fillStyle = "#ffd95e";
   ctx.shadowColor = "rgba(255, 180, 60, 0.6)";
   ctx.shadowBlur = 24;
-  ctx.font = F(78, 800);
-  ctx.fillText("三郎", 240, 140);
-  ctx.font = F(34, 800);
-  ctx.fillText("ゲーム", 240, 188);
+  ctx.font = F(82, 800);
+  ctx.fillText("三郎", 240, 348);
+  ctx.font = F(32, 800);
+  ctx.fillText("ゲーム", 240, 394);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
+  // キャッチコピー1行だけ。ルールはあそびかた画面へ
   ctx.fillStyle = "#c5cce6";
-  ctx.font = F(14);
-  const lines = IS_TOUCH
-    ? [
-        "リズムに乗って「三郎」と指をさし合う。",
-        "さされたら次の拍で、誰かをタップして指をさす。",
-        "同時にさされたら、手元をタップで「ハイハイ」。",
-        "1拍さばくごとに 1点。",
-        "2人同時タップの「同時さし」は連続2回まで。",
-        "1回目 +2点、連続2回目 +1点。間をあければまた +2点。",
-        "CPUはミスしない。何点まで伸ばせる？",
-      ]
-    : [
-        "リズムに乗って「三郎」と指をさし合う。",
-        "さされたら次の拍で A(左) / W(正面) / D(右) で指をさす。",
-        "同時にさされたら Space で「ハイハイ」。",
-        "1拍さばくごとに 1点。",
-        "2キー同時押しの「同時さし」は連続2回まで。",
-        "1回目 +2点、連続2回目 +1点。間をあければまた +2点。",
-        "CPUはミスしない。何点まで伸ばせる？",
-      ];
-  lines.forEach((t, i) => ctx.fillText(t, 240, 234 + i * 23));
+  ctx.font = F(17);
+  ctx.fillText("リズムに乗って、さし合え。", 240, 436);
 
-  // 難易度カード
+  // 難易度ピル（横並び）
   const keys = Object.keys(DIFFICULTIES);
   keys.forEach((k, i) => {
     const d = DIFFICULTIES[k];
-    const y = 400 + i * 86;
+    const r = TITLE_UI.pills[i];
     const sel = G.difficulty === k;
     ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
     ctx.shadowColor = sel ? "rgba(255, 200, 80, 0.5)" : "rgba(0,0,0,0.4)";
-    ctx.shadowBlur = sel ? 18 : 8;
-    rrect(70, y, 340, 70, 14);
+    ctx.shadowBlur = sel ? 16 : 6;
+    rrect(r.x, r.y, r.w, r.h, r.h / 2);
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
     ctx.fillStyle = sel ? "#222" : "#e8e4f5";
-    ctx.font = F(22, 800);
-    ctx.textAlign = "left";
-    ctx.fillText(`${i + 1}. ${d.label}`, 92, y + 30);
-    ctx.font = F(13);
-    ctx.fillStyle = sel ? "rgba(40,30,0,0.75)" : "#9aa3c0";
-    ctx.fillText(`BPM ${d.bpm}〜 上限なし`, 92, y + 54);
-    ctx.textAlign = "right";
-    ctx.fillText(`ベスト ${G.bests[k]} 点`, 388, y + 54);
+    ctx.font = F(19, 800);
+    ctx.fillText(IS_TOUCH ? d.label : `${i + 1} ${d.label}`, r.x + r.w / 2, r.y + 35);
   });
+
+  // 選択中の難易度のベストだけを1行で
+  ctx.fillStyle = "#9aa3c0";
+  ctx.font = F(15);
+  ctx.fillText(
+    `BPM ${DIFFICULTIES[G.difficulty].bpm}〜　ベスト ${G.bests[G.difficulty]} 点`,
+    240, 556
+  );
+
+  // スタートボタン
+  const s = TITLE_UI.start;
+  const pulse = 1 + 0.02 * Math.sin(now * 3);
+  ctx.save();
+  ctx.translate(s.x + s.w / 2, s.y + s.h / 2);
+  ctx.scale(pulse, pulse);
+  ctx.fillStyle = "#ffd95e";
+  ctx.shadowColor = "rgba(255, 200, 80, 0.55)";
+  ctx.shadowBlur = 22;
+  rrect(-s.w / 2, -s.h / 2, s.w, s.h, s.h / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = "#2a2520";
+  ctx.font = F(24, 800);
+  ctx.fillText("▶ スタート", 0, 9);
+  ctx.restore();
+  if (!IS_TOUCH) {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = F(13);
+    ctx.fillText("好きなキーでもスタート", 240, s.y + s.h + 24);
+  }
+
+  // あそびかた（小さく）
+  const h = TITLE_UI.howto;
+  ctx.fillStyle = "rgba(57, 64, 92, 0.6)";
+  rrect(h.x, h.y, h.w, h.h, h.h / 2);
+  ctx.fill();
+  ctx.fillStyle = "#c5cce6";
+  ctx.font = F(16, 800);
+  ctx.fillText(IS_TOUCH ? "？ あそびかた" : "？ あそびかた (H)", h.x + h.w / 2, h.y + 26);
+}
+
+// あそびかた画面。タイトルの「？」から開く
+function drawHowto(G, now) {
+  drawStage(now);
+  drawVignette();
+
+  ctx.fillStyle = "rgba(15, 13, 22, 0.72)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 30;
+  rrect(36, 90, 408, 590, 20);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd95e";
+  ctx.font = F(28, 800);
+  ctx.fillText("あそびかた", 240, 142);
+
+  const section = (title, y) => {
+    ctx.fillStyle = "#ffd95e";
+    ctx.font = F(16, 800);
+    ctx.textAlign = "left";
+    ctx.fillText(title, 64, y);
+  };
+  const body = (lines, y) => {
+    ctx.fillStyle = "#e8e4f5";
+    ctx.font = F(14);
+    ctx.textAlign = "left";
+    lines.forEach((t, i) => ctx.fillText(t, 64, y + i * 24));
+  };
+
+  section("ルール", 186);
+  body([
+    "リズムに乗って「三郎」と指をさし合う。",
+    "さされたら、次の拍で誰かをさし返す。",
+    "2人同時にさされたら「ハイハイ」で応える。",
+    "リズムを外したら負け。CPUはミスしない。",
+  ], 214);
+
+  section("そうさ", 332);
+  body(
+    IS_TOUCH
+      ? [
+          "さす ……… CPUをタップ",
+          "同時さし … 2本指で2人を同時タップ",
+          "ハイハイ … 画面下の手元をタップ",
+        ]
+      : [
+          "さす ……… A（左）/ W（正面）/ D（右）",
+          "同時さし … 2キー同時押し",
+          "ハイハイ … Space",
+        ],
+    360
+  );
+
+  section("とくてん", 454);
+  body([
+    "1拍さばくごとに 1点。",
+    "同時さしは +2点（連続2回目は +1点）。",
+    "同時さしを使えるのは連続2回まで。",
+    "8拍ごとにどんどん速くなる。",
+  ], 482);
 
   ctx.textAlign = "center";
   ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
-  ctx.font = F(18, 800);
-  ctx.fillText(
-    IS_TOUCH
-      ? "カードで難易度 — ほかをタップでスタート"
-      : "1 / 2 / 3 で難易度 — 好きなキーでスタート",
-    240, 720
-  );
+  ctx.font = F(16, 800);
+  ctx.fillText(IS_TOUCH ? "タップでもどる" : "好きなキーでもどる", 240, 640);
 }
 
 function drawGameOver(G) {
@@ -772,6 +874,10 @@ function drawSpeedup(G) {
 function render(G, now) {
   if (G.mode === "title") {
     drawTitle(G, now);
+    return;
+  }
+  if (G.mode === "howto") {
+    drawHowto(G, now);
     return;
   }
 
