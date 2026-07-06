@@ -239,14 +239,37 @@ const NET = {
     const name = encodeURIComponent(this._playerName || "ゲスト");
     const url = SABURO_SERVER + "/saburo/ws?room=" + encodeURIComponent(room) + "&name=" + name;
 
+    this.connected = false;
+    this.lastPlayers = null;
     this._transport = WsTransport(url);
     this._transport.onMessage(this._handleMessage.bind(this));
     this._transport.onClose(function() {
+      NET.connected = false;
       if (NET._onLeaveCb) {
         // 接続断をゲームへ通知（seat=-1 で「サーバー切断」を表す）
         NET._onLeaveCb(-1);
       }
     });
+  },
+
+  // WSモード: 接続が閉じていたら張り直す（タイトルへ戻る=退出→再スタートの再入室用）。
+  // 「退出したのに同じソケットでreadyを送る幽霊状態」を作らないため、
+  // 退出時はソケットを閉じ、スタート時にここで必ず張り直す
+  ensureConnected: function() {
+    if (!this.wsMode) return;
+    const ws = this._transport && this._transport.ws;
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+    this._initWs();
+  },
+
+  // WSモード: 部屋から抜けて接続も閉じる（タイトルへ戻るとき）
+  disconnect: function() {
+    if (!this.wsMode || !this._transport) return;
+    this.sendLeave();
+    this._transport.close();
+    this._transport = null;
+    this.connected = false;
+    this.lastPlayers = null;
   },
 
   // ---------- NTP風時計同期（WSモード専用） ----------

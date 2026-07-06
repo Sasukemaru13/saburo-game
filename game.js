@@ -407,6 +407,8 @@ async function startRound() {
 
     if (NET.wsMode) {
       // WSモード: 全員が ready を送ってサーバーの start を待つ（席0もそれ以外も同じ）。
+      // タイトルへ戻って切断していた場合はここで張り直す（再入室）
+      NET.ensureConnected();
       // 接続確立前にスタートを押すと最初の送信は握り潰される（readyState未OPEN）ため、
       // 待機中は1秒ごとに再送する（サーバー側は冪等なので害なし）
       NET.sendReady(G.difficulty);
@@ -1179,7 +1181,15 @@ function hitDifficulty(p) {
 
 // タイトルへ戻る。オンライン中は他のタブへ退出を通知する（残された側のフリーズ防止）
 function goTitle() {
-  if (G.online) NET.sendLeave();
+  if (G.online) {
+    if (NET.wsMode) {
+      // 退出＋切断までやる（接続だけ生かすと「部屋にいない幽霊」がreadyを送り続けて
+      // 二度と試合が始まらない）。次のスタート時に ensureConnected で張り直す
+      NET.disconnect();
+    } else {
+      NET.sendLeave();
+    }
+  }
   G.mode = "title";
   playUiPop();
 }
