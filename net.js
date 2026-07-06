@@ -23,8 +23,10 @@ function makePRNG(seed) {
 const SABURO_SERVER = (function() {
   const params = new URLSearchParams(location.search);
   if (params.has("ws")) return params.get("ws");
+  // ローカル開発ではゲーム配信が :8080（python3 -m http.server）なので、
+  // 対戦サーバーは :8081 で起動する運用（PORT=8081 python3 saburo.py）
   return location.hostname === "localhost"
-    ? "ws://localhost:8080"
+    ? "ws://localhost:8081"
     : "wss://zeus-kun.fly.dev";
 })();
 

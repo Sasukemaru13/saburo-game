@@ -24,7 +24,9 @@ function makeChars(onlinePlayers) {
   // 固定カラー・ピッチは絶対席番号で決める（全クライアントで統一）
   const COLORS = ["#e8554d", "#4d7de8", "#4db35e", "#c78b2e"];
   const PITCHES = [1.0, 0.82, 1.22, 1.45];
-  const CPU_NAMES = ["あなた", "一郎", "二郎", "四郎"];
+  // CPU名は絶対席基準（サーバーの build_start_players と一致させる）。
+  // 「三郎」は使わない（実在しないのがネタの核）。絶対席0が空席の場合は太郎
+  const CPU_NAMES = ["太郎", "一郎", "二郎", "四郎"];
   const chars = [];
   for (let local = 0; local < 4; local++) {
     const abs = toAbs(local);
@@ -33,7 +35,7 @@ function makeChars(onlinePlayers) {
       chars.push({
         name: player.kind === "human"
           ? (local === 0 ? (player.name ? player.name + "（あなた）" : "あなた") : (player.name || "P" + (abs + 1)))
-          : CPU_NAMES[abs],
+          : (player.name || CPU_NAMES[abs]),
         color: COLORS[abs],
         pitch: PITCHES[abs],
         anim: null,
@@ -404,8 +406,20 @@ async function startRound() {
     });
 
     if (NET.wsMode) {
-      // WSモード: 全員が ready を送ってサーバーの start を待つ（席0もそれ以外も同じ）
+      // WSモード: 全員が ready を送ってサーバーの start を待つ（席0もそれ以外も同じ）。
+      // 接続確立前にスタートを押すと最初の送信は握り潰される（readyState未OPEN）ため、
+      // 待機中は1秒ごとに再送する（サーバー側は冪等なので害なし）
       NET.sendReady(G.difficulty);
+      if (G._readyTimer) clearInterval(G._readyTimer);
+      G._readyTimer = setInterval(function() {
+        const waiting = G.online && G.mode === "intro" && round && !round.event;
+        if (waiting) {
+          NET.sendReady(G.difficulty);
+        } else {
+          clearInterval(G._readyTimer);
+          G._readyTimer = null;
+        }
+      }, 1000);
       // 待機画面の人数情報を roster コールバックで更新する
       NET.onRoster(function(players) {
         if (G.mode !== "intro" || (round && round.event)) return;
