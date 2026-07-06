@@ -122,10 +122,14 @@ const NET = {
   _onInputCb: null,   // 他席のinputを受けたときのコールバック
   _onReadyCb: null,   // ready メッセージを受けたときのコールバック
   _onResumeCb: null,  // resume メッセージを受けたときのコールバック
+  _onLeaveCb: null,   // leave メッセージを受けたときのコールバック
 
   // ready 待ち合わせ: 「もう一度」も含め、ホストは全ゲストのreadyを見てから開始を配る
   // （startを配った時点でクリアし、次の試合のreadyを待てるようにする）
   readySeats: {},
+
+  // 退出した席（タイトルへ戻った・タブを閉じた）。readyが来たら復帰扱いで解除
+  departedSeats: {},
 
   // PRNGインスタンス（cpuSeed で初期化）
   _rng: null,
@@ -228,6 +232,17 @@ const NET = {
     this._onResumeCb = cb;
   },
 
+  // 退出（タイトルへ戻る・タブを閉じる）を他のタブへ伝える
+  sendLeave: function() {
+    if (!this.online || !this._transport) return;
+    this._transport.send({ type: "leave", seat: this.mySeat });
+  },
+
+  // leave メッセージのコールバックを登録する（cb(seat)）
+  onLeave: function(cb) {
+    this._onLeaveCb = cb;
+  },
+
   // 他席のinputメッセージのコールバックを登録する
   // cb(beat, localSeat, action, localTargets, result) の形で呼ばれる
   onInput: function(cb) {
@@ -246,7 +261,13 @@ const NET = {
     } else if (msg.type === "ready") {
       if (msg.seat === this.mySeat) return;
       this.readySeats[msg.seat] = true;
+      this.departedSeats[msg.seat] = false; // 再入室したら復帰扱い
       if (this._onReadyCb) this._onReadyCb(msg.seat);
+    } else if (msg.type === "leave") {
+      if (msg.seat === this.mySeat) return;
+      this.departedSeats[msg.seat] = true;
+      delete this.readySeats[msg.seat];
+      if (this._onLeaveCb) this._onLeaveCb(msg.seat);
     } else if (msg.type === "resume") {
       if (this._onResumeCb) this._onResumeCb(msg);
     } else if (msg.type === "input") {

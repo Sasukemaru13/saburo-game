@@ -374,6 +374,22 @@ async function startRound() {
 
     NET.onInput(handleRemoteInput);
     NET.onResume(function(msg) { handleResume(msg.t0, msg.actor); });
+    NET.onLeave(function(seat) {
+      // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
+      if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
+        const local = toLocal(seat);
+        const name = (G.chars[local] && G.chars[local].name) || "相手";
+        gameOver(name + " が退出しました");
+      }
+    });
+
+    // 相手がすでに退出している状態で「もう一度」を押した場合は待たずに知らせる
+    // （ローカル2タブ版: 相手=絶対席 0か1 のもう一方）
+    const otherSeat = NET.mySeat === 0 ? 1 : 0;
+    if (NET.departedSeats[otherSeat]) {
+      gameOver("相手が退出しました（対戦するにはもう一度URLを開いてもらってね）");
+      return;
+    }
 
     if (NET.mySeat === 0) {
       // ホスト: ゲスト（絶対席1）がスタートを押している（ready）のを確認してから開始を配る。
@@ -985,7 +1001,7 @@ window.addEventListener("keydown", (e) => {
 
   if (G.mode === "gameover") {
     if (key === "r") startRound();
-    if (key === "t") { G.mode = "title"; playUiPop(); }
+    if (key === "t") goTitle();
     return;
   }
 
@@ -1057,6 +1073,13 @@ function hitDifficulty(p) {
   return null;
 }
 
+// タイトルへ戻る。オンライン中は他のタブへ退出を通知する（残された側のフリーズ防止）
+function goTitle() {
+  if (G.online) NET.sendLeave();
+  G.mode = "title";
+  playUiPop();
+}
+
 // 開いた直後の連打タップで即閉じてしまい「反応してない」ように見えるのを防ぐ
 let howtoOpenedAt = 0;
 
@@ -1091,7 +1114,7 @@ function handleTapUI(pos) {
   }
   if (G.mode === "gameover") {
     if (inRect(pos, 120, 462, 240, 52)) startRound();
-    else if (inRect(pos, 160, 524, 160, 34)) { G.mode = "title"; playUiPop(); }
+    else if (inRect(pos, 160, 524, 160, 34)) goTitle();
     return true;
   }
   if (G.mode === "interlude") {
@@ -1134,6 +1157,11 @@ canvas.addEventListener("mousedown", (e) => {
 // タブ復帰時にiOSが音声を止めたままにする場合がある
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) ensureAudioRunning();
+});
+
+// タブを閉じた・別ページへ移動したときも退出を通知する
+window.addEventListener("pagehide", () => {
+  if (G.online) NET.sendLeave();
 });
 
 // NET を初期化する（?online=1 があるときだけ有効になる）
