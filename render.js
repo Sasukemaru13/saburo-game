@@ -600,6 +600,26 @@ function drawTitle(G, now) {
   drawStage(now);
   drawVignette();
 
+  // オンライン（WS）時: 部屋の在室数を常時表示（rosterで即時更新される）
+  if (G.online && NET.wsMode) {
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = "rgba(38, 43, 61, 0.92)";
+    rrect(150, 22, 180, 34, 10);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#8ec9ff";
+    ctx.font = F(15, 800);
+    const label = NET.connected
+      ? "部屋にいる人: " + (NET.lastPlayers ? NET.lastPlayers.length : 1) + "/4"
+      : "接続中…";
+    ctx.fillText(label, 240, 40);
+    ctx.textBaseline = "alphabetic";
+  }
+
   // ロゴ: でかい指さし手（ふわふわ浮かせる）。
   // 真上向きは中指を立てているように見えるため、斜め上をさす
   const handX = 220;
