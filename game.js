@@ -493,8 +493,11 @@ function doPoint(actor, targets) {
 
   // 同時さしボーナス: 連続の1回目だけ+2点。連続2回目は+1点、間をあければまた+2点
   // （consecは単独さしで0に戻るので「連続の何回目か」がそのまま分かる）
+  // オンライン時は actor === 0 が「そのタブの自分」を意味しタブ間でスコアが分岐するため、
+  // どの人間の同時さしでも+2にして全画面のスコアを一致させる
   let gain = 1;
-  if (actor === 0 && targets.length === 2 && round.consec[0] === 0) gain = 2;
+  const firstDouble = targets.length === 2 && round.consec[actor] === 0;
+  if (G.online ? firstDouble : (actor === 0 && firstDouble)) gain = 2;
   G.score += gain;
   addPopup(actor, gain);
   maybeRamp();
@@ -524,31 +527,42 @@ function doPoint(actor, targets) {
 // 次イベントがCPUの指差しなら実行タイミング(ジッター)を決めておく。CPUはミスしない
 function prepareCpu() {
   const ev = round.event;
-  if (ev.type === "point" && ev.actor !== 0) {
-    // オンライン時: ジッターもシード乱数で全クライアントが同じ値を引く（見た目一致）
-    // 1人用: 従来どおり Math.random
-    const jitter = G.online
-      ? (NET.rng()() - 0.5) * 0.05
-      : (Math.random() - 0.5) * 0.05;
-    ev.cpuActAt = ev.t + jitter;
+  if (ev.type !== "point") return;
+  if (G.online) {
+    // オンライン時: 乱数を引くのは「本物のCPU」の手番だけ。
+    // ev.actor !== 0 で判定すると、リモート人間の手番で自分のタブだけ乱数を引いてしまい
+    // （相手のタブではそれは actor === 0 なので引かない）、以後の乱数列が全タブでズレる
+    const ch = G.chars[ev.actor];
+    if (!ch || ch.kind !== "cpu") return;
+    ev.cpuActAt = ev.t + (NET.rng()() - 0.5) * 0.05;
+    ev.cpuDone = false;
+  } else if (ev.actor !== 0) {
+    // 1人用: 従来どおり
+    ev.cpuActAt = ev.t + (Math.random() - 0.5) * 0.05;
     ev.cpuDone = false;
   }
 }
 
 function cpuChooseTargets(actor) {
-  const others = [0, 1, 2, 3].filter((i) => i !== actor);
+  // オンライン時: 抽選は必ず「絶対席番号」で行い、結果をローカル座標へ変換して返す。
+  // ローカル座標のまま抽選すると、同じ乱数を引いても others 配列の中身（実体）が
+  // タブごとに別人なので、指し先が画面ごとに分岐する
+  const actorAbs = G.online ? toAbs(actor) : actor;
+  const others = [0, 1, 2, 3].filter((i) => i !== actorAbs);
   const canDouble = round.consec[actor] < 2;
-  // オンライン時: 全クライアントが同じ乱数列を引く（決定論の核心）
   // 乱数の呼び出し順は「拍の進行（advanceEvent → prepareCpu → cpuChooseTargets）」
-  // だけに依存し、描画・ローカル入力には依存しない
+  // だけに依存し、描画・ローカル入力には依存しない（決定論の核心）
   const rnd = G.online ? NET.rng() : Math.random.bind(Math);
+  let picked;
   if (canDouble && rnd() < G.diff.cpuDouble) {
     const i = Math.floor(rnd() * 3);
     let j = Math.floor(rnd() * 2);
     if (j >= i) j++;
-    return [others[i], others[j]];
+    picked = [others[i], others[j]];
+  } else {
+    picked = [others[Math.floor(rnd() * 3)]];
   }
-  return [others[Math.floor(rnd() * 3)]];
+  return G.online ? picked.map(toLocal) : picked;
 }
 
 // プレイヤーの指差し入力を確定する（同時押し収集後に呼ばれる）
