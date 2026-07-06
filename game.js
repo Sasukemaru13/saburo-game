@@ -990,7 +990,10 @@ window.addEventListener("keydown", (e) => {
   }
 
   if (G.mode === "interlude") {
-    tryResume(); // どのキーでも可（押せるのはミスした本人だけ）
+    if (key === " ") {
+      e.preventDefault();
+      tryResume(); // Spaceのみ（押せるのはミスした本人だけ）
+    }
     return;
   }
 

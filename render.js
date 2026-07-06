@@ -844,19 +844,26 @@ function drawInterlude(G) {
   const isMe = G.resumeSeat === 0;
   if (isMe) {
     // 再開ボタン（当たり判定は画面全体: game.js の handleTapUI と対応）
+    // ボタンはラベル幅から余白を取って描く（文字に対して背景が窮屈にならないように）
+    const label = IS_TOUCH ? "スタート" : "スタート（Space）";
+    ctx.font = F(24, 800);
+    const labelW = ctx.measureText(label).width;
+    const btnW = labelW + 88; // 左右余白 44px ずつ
+    const btnH = 72;
     ctx.fillStyle = "#ffd95e";
     ctx.shadowColor = "rgba(0,0,0,0.5)";
     ctx.shadowBlur = 16;
-    rrect(110, 380, 260, 58, 16);
+    rrect(240 - btnW / 2, 372, btnW, btnH, 18);
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
     ctx.fillStyle = "#2a2520";
-    ctx.font = F(22, 800);
-    ctx.fillText(IS_TOUCH ? "スタート" : "スタート（どれかのキー）", 240, 417);
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 240, 372 + btnH / 2);
+    ctx.textBaseline = "alphabetic";
     ctx.fillStyle = "#c5cce6";
     ctx.font = F(15);
-    ctx.fillText("あなたからリスタート", 240, 470);
+    ctx.fillText("あなたからリスタート", 240, 486);
   } else {
     ctx.fillStyle = "#c5cce6";
     ctx.font = F(18, 700);
