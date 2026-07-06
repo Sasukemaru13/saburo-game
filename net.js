@@ -181,6 +181,7 @@ const NET = {
   online: false,
   wsMode: false,      // true = WSサーバー経由（フェーズ2）
   connected: false,   // WSモードで joined を受けた後に true
+  clockReady: false,  // 最初のpongでサーバー時計のオフセットが取れたら true
   lastPlayers: null,  // 最新の在室者リスト（joined/rosterで更新・待機画面用）
 
   // オンラインパラメータ
@@ -240,6 +241,7 @@ const NET = {
     const url = SABURO_SERVER + "/saburo/ws?room=" + encodeURIComponent(room) + "&name=" + name;
 
     this.connected = false;
+    this.clockReady = false;
     this.lastPlayers = null;
     this._transport = WsTransport(url);
     this._transport.onMessage(this._handleMessage.bind(this));
@@ -269,6 +271,7 @@ const NET = {
     this._transport.close();
     this._transport = null;
     this.connected = false;
+    this.clockReady = false;
     this.lastPlayers = null;
   },
 
@@ -312,6 +315,8 @@ const NET = {
       // = msg.server - msg.t - rtt/2 = msg.server - (msg.t + rtt/2)
       _clockOffsetMs = msg.server - (msg.t + rtt / 2);
     }
+    // 最初のpongで時計合わせ完了（これが立つまでreadyを送らない=同期前startの防止）
+    this.clockReady = true;
   },
 
   // 外部から呼べるサーバー時刻推定値（ms）
@@ -331,7 +336,10 @@ const NET = {
 
   // ready 送信（localモード: ホストへ通知 / WSモード: サーバーへ送信）
   sendReady: function(difficulty) {
-    if (!this.online) return;
+    if (!this.online || !this._transport) return;
+    // WSモード: 時計が合う前にreadyを送るとオフセット0のままstartが来て
+    // 開始時刻の変換が破綻する。1秒ごとの再送があるので合うまで黙って待つ
+    if (this.wsMode && (!this.connected || !this.clockReady)) return;
     const msg = { type: "ready", difficulty: difficulty || "normal" };
     if (!this.wsMode) msg.seat = this.mySeat; // localモードは seat を付ける
     this._transport.send(msg);

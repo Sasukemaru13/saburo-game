@@ -398,6 +398,9 @@ async function startRound() {
         } else if (seat === -2) {
           gameOver("部屋が満員です");
         } else {
+          // 自分の試合がまだ始まっていない（開始前の待機中）なら、他人の退出は
+          // 打ち切り対象ではない。人数表示（roster）の更新に任せて無視する
+          if (!round || !round.event) return;
           const local = toLocal(seat);
           const name = seatDisplayName(local);
           gameOver(name + " が退出しました");
@@ -432,8 +435,10 @@ async function startRound() {
         }
         const list = players || NET.lastPlayers || [];
         const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
+        // 対戦中の部屋に後から入った場合、その試合が終わるまでは始まらない
+        // （サーバーは試合の終了を知らないため正確な表示はフェーズ3で対応）
         G.introText = humanCount >= 2
-          ? "参加者 " + humanCount + " 人　全員そろうと開始…"
+          ? "参加者 " + humanCount + " 人　全員が押すと開始…"
           : "参加者 " + humanCount + " 人　相手の入室待ち…";
       };
       NET.onRoster(updateWaitingText);
