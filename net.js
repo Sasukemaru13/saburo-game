@@ -183,6 +183,7 @@ const NET = {
   connected: false,   // WSモードで joined を受けた後に true
   clockReady: false,  // 最初のpongでサーバー時計のオフセットが取れたら true
   lastPlayers: null,  // 最新の在室者リスト（joined/rosterで更新・待機画面用）
+  inProgress: false,  // 試合中フラグ（joined/roster の inProgress フィールドを保持）
 
   // オンラインパラメータ
   room: "default",
@@ -197,7 +198,9 @@ const NET = {
   _onReadyCb: null,
   _onResumeCb: null,
   _onLeaveCb: null,
-  _onRosterCb: null,  // roster/joined 受信時（待機画面の人数表示用）
+  _onRosterCb: null,      // roster/joined 受信時（待機画面の人数表示用）
+  _onMissDeclCb: null,    // miss_decl 受信時（フェーズ3）
+  _onMatchEndCb: null,    // match_end 受信時（フェーズ3）
 
   // ready 待ち合わせ（localモード専用）
   readySeats: {},
@@ -392,10 +395,13 @@ const NET = {
   // ミス後の再開リクエスト
   // localモード: t0+actorAbs を自前でブロードキャスト
   // WSモード: resume_req をサーバーへ送る（サーバーが resume を配る）
-  sendResume: function(t0, actorAbs) {
+  // livesAbs: 絶対席順に並べたライフ配列（4要素）。WSモードで resume_req に付加する
+  sendResume: function(t0, actorAbs, livesAbs) {
     if (!this.online) return;
     if (this.wsMode) {
-      this._transport.send({ type: "resume_req" });
+      const msg = { type: "resume_req" };
+      if (livesAbs) msg.lives = livesAbs;
+      this._transport.send(msg);
     } else {
       const msg = { type: "resume", t0: t0, actor: actorAbs };
       this._transport.send(msg);
@@ -406,6 +412,30 @@ const NET = {
   // resume コールバック登録
   onResume: function(cb) {
     this._onResumeCb = cb;
+  },
+
+  // stall_report 送信（リモート人間の手番タイムアウト申告。WSモード専用）
+  // localモードは同一マシンなのでズレが起きない → no-op
+  sendStallReport: function(beat, actorAbs) {
+    if (!this.online || !this.wsMode || !this._transport) return;
+    this._transport.send({ type: "stall_report", beat: beat, actor: actorAbs });
+  },
+
+  // match_end 送信（勝敗確定時。WSモード専用）
+  // localモードは no-op（同一マシン内でズレが起きないため不要）
+  sendMatchEnd: function(winnerAbs) {
+    if (!this.online || !this.wsMode || !this._transport) return;
+    this._transport.send({ type: "match_end", winner: winnerAbs });
+  },
+
+  // miss_decl 受信コールバック登録（cb(seat, beat, reason)）
+  onMissDecl: function(cb) {
+    this._onMissDeclCb = cb;
+  },
+
+  // match_end 受信コールバック登録（cb(winner)）
+  onMatchEnd: function(cb) {
+    this._onMatchEndCb = cb;
   },
 
   // 退出通知
@@ -440,13 +470,21 @@ const NET = {
       this.connected = true;
       if (typeof G !== "undefined") G._wsRetry = 0; // 再接続成功でリトライ計数をリセット
       this.lastPlayers = msg.players || null; // 最新の在室者（待機画面が後から参照する）
+      if (msg.inProgress !== undefined) this.inProgress = !!msg.inProgress;
       // 時計同期を開始
       this._startClockSync();
       // roster 相当の初期メンバー通知
       if (this._onRosterCb && msg.players) this._onRosterCb(msg.players);
     } else if (msg.type === "roster") {
       this.lastPlayers = msg.players || null;
+      if (msg.inProgress !== undefined) this.inProgress = !!msg.inProgress;
       if (this._onRosterCb) this._onRosterCb(msg.players);
+    } else if (msg.type === "miss_decl") {
+      // フェーズ3: サーバー公式のタイムアウトミス宣言
+      if (this._onMissDeclCb) this._onMissDeclCb(msg.seat, msg.beat, msg.reason || "時間切れ");
+    } else if (msg.type === "match_end") {
+      // フェーズ3: 試合終了の再配布
+      if (this._onMatchEndCb) this._onMatchEndCb(msg.winner);
     } else if (msg.type === "pong") {
       this._handlePong(msg);
     } else if (msg.type === "start") {

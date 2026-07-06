@@ -663,10 +663,16 @@ function drawTitle(G, now) {
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
     ctx.fillStyle = "#8ec9ff";
-    const label = NET.connected
+    let roomLabel = NET.connected
       ? "部屋にいる人: " + (NET.lastPlayers ? NET.lastPlayers.length : 1) + "/4"
       : "接続中…";
-    fillTextFit(label, 240, 40, 15, 800, 170);
+    fillTextFit(roomLabel, 240, 40, 15, 800, 170);
+    // フェーズ3: 試合中バッジ
+    if (NET.connected && NET.inProgress) {
+      ctx.font = F(11, 800);
+      ctx.fillStyle = "#ffaa44";
+      ctx.fillText("試合中", 355, 40);
+    }
     // 在室者の名前一覧（長い名前は切り詰め＋全体は自動縮小ではみ出さない）
     if (NET.connected && NET.lastPlayers && NET.lastPlayers.length) {
       const names = NET.lastPlayers.map(function(p) {

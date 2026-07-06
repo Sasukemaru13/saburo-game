@@ -97,6 +97,7 @@ const G = {
   onlineWaiting: false,  // 開始前の待ち合わせ中か（待機画面のヒント表示用）
   _readyTimer: null,     // ゲストのready再送タイマー
   rankingList: null,     // 1人用ゲームオーバー時の上位5件（fetch成功時のみ）
+  _memberOfMatch: true,  // フェーズ3: start受信時に自分が players に含まれていれば true
 };
 
 // ---------- 音声 ----------
@@ -354,6 +355,7 @@ async function startRound() {
     event: null,
     awaitingClock: true, // 音声時計が動き出した瞬間にarmRoundで開始時刻を確定する
     beatCounter: 0,
+    stallReportedBeat: -1, // フェーズ3: stall_report を送った最後の beat（重複防止）
   };
 
   if (G.online) {
@@ -384,6 +386,26 @@ async function startRound() {
           .map(function(p) { return toLocal(p.seat); });
         G.chars = makeChars(G.players);
       }
+
+      // フェーズ3: 自分が試合メンバーに含まれているか確認する
+      // start の players に自分の絶対席が human として入っていなければ「試合メンバー外」
+      const selfInMatch = msg.players
+        ? msg.players.some(function(p) { return p.seat === NET.mySeat && p.kind === "human"; })
+        : true; // players がない（localモード等）なら参加とみなす
+      G._memberOfMatch = selfInMatch;
+
+      if (!selfInMatch) {
+        // 試合メンバー外: ready 再送タイマーを止めて待機継続
+        if (G._readyTimer) {
+          clearInterval(G._readyTimer);
+          G._readyTimer = null;
+        }
+        G.introText = "試合が始まりました（次の試合から参加できます）";
+        G.introSub = "";
+        // armRound せず待機のまま。match_end で待機テキストを戻す
+        return;
+      }
+
       if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
       // msg.t0 はサーバー時刻（ms）。audioCtx.currentTime はタブごとに独立した時計なので
       // サーバー時刻基準でローカル音声時計に変換する。
@@ -398,7 +420,7 @@ async function startRound() {
     });
 
     NET.onInput(handleRemoteInput);
-    NET.onResume(function(msg) { handleResume(msg.t0, msg.actor); });
+    NET.onResume(function(msg) { handleResume(msg.t0, msg.actor, msg.lives); });
     NET.onLeave(function(seat) {
       // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
       if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
@@ -426,6 +448,35 @@ async function startRound() {
           gameOver(name + " が退出しました");
         }
       }
+    });
+
+    // フェーズ3: サーバー公式タイムアウトミス宣言を受け入れる
+    // beat:seat の重複防止は handleMiss 側の _lastMissKey で吸収される
+    NET.onMissDecl(function(absSeat, beat, reason) {
+      handleMiss(toLocal(absSeat), reason || "反応できなかった…（時間切れ）", beat);
+    });
+
+    // フェーズ3: 試合終了の再配布（自分が送ったものも返ってくる）
+    NET.onMatchEnd(function(winner) {
+      if (G.mode === "gameover") return; // すでに終了済みなら無視
+      if (G.mode === "play" || G.mode === "interlude" || G.mode === "intro") {
+        const reason = winner >= 0
+          ? seatDisplayName(toLocal(winner)) + " の勝ち！"
+          : "引き分け…";
+        gameOver(reason);
+      }
+      // 試合メンバー外で待機中だった場合: 待機テキストを通常に戻す
+      if (!G._memberOfMatch) {
+        G._memberOfMatch = true;
+        if (G.mode === "intro" && round && !round.event) {
+          // updateWaitingText は WSモードなので roster が来た時に更新されるが
+          // match_end 直後は roster が届く前に文言が stale になるため暫定で更新する
+          G.introText = "参加待ち…";
+          G.introSub = "次の試合から参加できます";
+        }
+      }
+      // inProgress フラグを折る
+      NET.inProgress = false;
     });
 
     if (NET.wsMode) {
@@ -457,8 +508,12 @@ async function startRound() {
         const list = players || NET.lastPlayers || [];
         const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
         const readyCount = list.filter(function(p) { return p.ready; }).length;
-        // 対戦中の部屋に後から入った場合、その試合が終わるまでは始まらない
-        // （サーバーは試合の終了を知らないため正確な表示はフェーズ3で対応）
+        // フェーズ3: 試合中（inProgress）なら「試合中・終了待ち」を補足に出す
+        if (NET.inProgress) {
+          G.introText = "参加者 " + humanCount + " 人";
+          G.introSub = "試合中・終了待ち";
+          return;
+        }
         // メイン行は短く保ち、補足はintroSub（下の小さい行）に分ける
         if (humanCount >= 2) {
           G.introText = "スタート済み " + readyCount + "/" + humanCount + " 人";
@@ -646,7 +701,10 @@ function handleMiss(seat, reason, beat) {
     if (G.chars[i] && G.chars[i].kind === "human") alive.push(i);
   }
   if (alive.length <= 1) {
-    gameOver(alive.length === 1 ? seatDisplayName(alive[0]) + " の勝ち！" : "引き分け…");
+    const winnerLocal = alive.length === 1 ? alive[0] : -1;
+    // フェーズ3: 勝敗をサーバー経由で全員へ配布（自分のタブが勝敗を決定した場合に送る）
+    if (G.online) NET.sendMatchEnd(winnerLocal >= 0 ? toAbs(winnerLocal) : -1);
+    gameOver(winnerLocal >= 0 ? seatDisplayName(winnerLocal) + " の勝ち！" : "引き分け…");
     return;
   }
 
@@ -665,11 +723,16 @@ function handleMiss(seat, reason, beat) {
 function tryResume() {
   if (!G.online || G.mode !== "interlude") return;
   if (G.resumeSeat !== 0) return; // 再開ボタンはミスした本人だけ
-  NET.sendResume(Date.now() + 2000, toAbs(G.resumeSeat));
+  // フェーズ3: ライフを絶対席順に並べ替えてサーバーへ送る
+  const livesAbs = [0, 0, 0, 0];
+  for (let local = 0; local < 4; local++) {
+    livesAbs[toAbs(local)] = G.lives[local];
+  }
+  NET.sendResume(Date.now() + 2000, toAbs(G.resumeSeat), livesAbs);
 }
 
 // 再開メッセージ（自分・リモート共通）: ミスした人からテンポ初速で再スタート
-function handleResume(t0Wall, actorAbs) {
+function handleResume(t0Wall, actorAbs, livesFromMsg) {
   if (!G.online || G.mode !== "interlude") return;
   if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
   round.interval = 60 / G.diff.bpm;
@@ -678,6 +741,21 @@ function handleResume(t0Wall, actorAbs) {
   round.consec = [0, 0, 0, 0];
   round.pendingKeys = null;
   G.resumeSeat = null;
+
+  // フェーズ3: サーバーから lives が返ってきた場合はそれを正値として採用する。
+  // 絶対席順 → ローカル席順に変換して G.lives に適用する
+  if (livesFromMsg && Array.isArray(livesFromMsg) && livesFromMsg.length === 4) {
+    for (let abs = 0; abs < 4; abs++) {
+      const local = toLocal(abs);
+      G.lives[local] = livesFromMsg[abs];
+      // ライフ0 の席はCPU化（既にcpuなら何もしない）
+      if (livesFromMsg[abs] === 0 && G.chars[local] && G.chars[local].kind !== "cpu") {
+        G.chars[local].kind = "cpu";
+        G.humanSeats = G.humanSeats.filter(function(s) { return s !== local; });
+      }
+    }
+  }
+
   G.mode = "intro";
   const _resumeNowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
   const t0Local = audioCtx.currentTime + (t0Wall - _resumeNowMs) / 1000;
@@ -1005,6 +1083,11 @@ function update() {
       G.waitNote = now > ev.t + 1.5
         ? seatDisplayName(ev.actor) + " の応答待ち…"
         : "";
+      // フェーズ3: 2.5秒超で stall_report を1回だけ送る（そのbeatにつき1回）
+      if (now > ev.t + 2.5 && round.stallReportedBeat !== ev.beat) {
+        round.stallReportedBeat = ev.beat;
+        NET.sendStallReport(ev.beat, toAbs(ev.actor));
+      }
     } else if (!ev.cpuDone && now >= ev.cpuActAt) {
       // CPUの番: 従来どおりローカル決定論で進める
       ev.cpuDone = true;
@@ -1035,6 +1118,17 @@ function update() {
       if (G.online && !selfPending) {
         // リモート待ち: 判定はしないが、長引いたら表示だけ出す
         if (now > ev.t + 1.5) G.waitNote = "ハイハイの応答待ち…";
+        // フェーズ3: 2.5秒超で未応答の人間actor それぞれに stall_report（1beat1回）
+        if (now > ev.t + 2.5 && round.stallReportedBeat !== ev.beat) {
+          round.stallReportedBeat = ev.beat;
+          for (const a of ev.actors) {
+            if (G.chars[a] && G.chars[a].kind === "human") {
+              if (!ev.playerDoneSeats || !ev.playerDoneSeats[a]) {
+                NET.sendStallReport(ev.beat, toAbs(a));
+              }
+            }
+          }
+        }
       } else {
         reportSelfMiss("ハイハイできなかった…");
         return;
