@@ -340,8 +340,16 @@ async function startRound() {
     // オンライン時は awaitingClock フラグを使わず、NET の start コールバックで armRound を呼ぶ
     round.awaitingClock = false;
 
+    // start コールバックは1本に統合する（onStartは上書き式なので二重登録禁止）。
+    // ホスト自身も broadcastStart 経由でここを通る
     NET.onStart(function(msg) {
-      // start メッセージを受けたら（ホスト自身も含む）armRound を実行
+      if (msg.players) {
+        G.players = msg.players;
+        G.humanSeats = msg.players
+          .filter(function(p) { return p.kind === "human"; })
+          .map(function(p) { return toLocal(p.seat); });
+        G.chars = makeChars(G.players);
+      }
       if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
       armRound(msg.t0);
     });
@@ -351,34 +359,16 @@ async function startRound() {
     if (NET.mySeat === 0) {
       // ホスト: 開始時刻を決めてブロードキャスト（2秒後に始まる）
       const t0 = audioCtx.currentTime + 2.0;
-      // players 配列を組み立てる（ローカル2タブ版: seat=0が人間、残りCPU）
+      // players 配列を組み立てる（ローカル2タブ版: seat=0とseat=1が人間、残りCPU）
       const players = [
-        { seat: 0, name: "あなた", kind: "human" },
-        { seat: 1, name: "P2", kind: "human" }, // seat=1 も人間（2タブ対戦）
+        { seat: 0, name: "P1", kind: "human" },
+        { seat: 1, name: "P2", kind: "human" },
         { seat: 2, name: "二郎", kind: "cpu" },
         { seat: 3, name: "四郎", kind: "cpu" },
       ];
-      G.players = players;
-      // humanSeats を更新（ローカル席番号）
-      G.humanSeats = players
-        .filter(function(p) { return p.kind === "human"; })
-        .map(function(p) { return toLocal(p.seat); });
       NET.broadcastStart(t0, NET.cpuSeed, players);
-    } else {
-      // ゲスト: start メッセージを待つ（コールバック登録済み）
-      // G.players と G.humanSeats は start コールバック内で設定する
-      NET.onStart(function(msg) {
-        // ゲスト用: players を受け取って設定
-        if (msg.players) {
-          G.players = msg.players;
-          G.humanSeats = msg.players
-            .filter(function(p) { return p.kind === "human"; })
-            .map(function(p) { return toLocal(p.seat); });
-          G.chars = makeChars(G.players);
-        }
-        // armRound は最初のコールバック（上で登録済み）が呼ぶ
-      });
     }
+    // ゲスト: start メッセージを待つだけ（コールバック登録済み）
   } else {
     // 1人用: 従来どおり音声時計が動き出したら armRound
     if (audioCtx.state === "running") armRound();
@@ -392,7 +382,10 @@ function armRound(t0Override) {
   const t0 = (t0Override !== undefined) ? t0Override : audioCtx.currentTime + 0.5;
   round.t0 = t0;
   round.phaseT = t0;
-  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: 0, beat: 0 };
+  // 最初の手番は「絶対席0」。1人用では自分（=0）、オンラインでは各タブのローカル座標に変換する
+  // （ここを各タブの「自分」にすると初手から進行が分岐する）
+  const firstActor = G.online ? toLocal(0) : 0;
+  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: firstActor, beat: 0 };
   round.awaitingClock = false;
   round.beatCounter = 0; // 通し拍番号（人間手番ゲートのキー）
   // 1.2はバンドパスで削れる分の補償。声(1.0)と並んでも埋もれない音量にする
@@ -493,7 +486,11 @@ function doPoint(actor, targets) {
       actors: targets.slice(),
       returnTo: actor,
       cpuDone: false,
-      playerDone: !targets.includes(0),
+      // 1人用: 自分が含まれる時だけ応答待ち。
+      // オンライン: 人間（自分・リモート問わず）が1人でも含まれれば応答待ち
+      playerDone: G.online
+        ? !targets.some(function(a) { return G.chars[a] && G.chars[a].kind === "human"; })
+        : !targets.includes(0),
     });
   } else {
     round.consec[actor] = 0;
@@ -658,6 +655,8 @@ function update() {
   }
   const now = audioCtx.currentTime;
   const ev = round.event;
+  // オンラインのゲストはホストの start メッセージ（armRound）が来るまでイベントが無い
+  if (!ev) return;
   const win = winNow();
 
   // ビート位相（描画用）
@@ -712,9 +711,17 @@ function update() {
     }
     // プレイヤーが含まれる場合の時間切れ
     if (!ev.playerDone && now > ev.t + win) {
-      if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
-      gameOver("ハイハイできなかった…");
-      return;
+      // オンライン時、自分の分は済んでいて（または自分は無関係で）リモート人間待ちなら
+      // 自分では判定しない（missはその人のタブが申告する）
+      const selfPending = ev.actors.includes(0) &&
+        !(ev.playerDoneSeats && ev.playerDoneSeats[0]);
+      if (G.online && !selfPending) {
+        // リモート待ち: 何もしない
+      } else {
+        if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
+        gameOver("ハイハイできなかった…");
+        return;
+      }
     }
     // 全員完了したら手番が同時指しした人に戻る
     if (ev.cpuDone && ev.playerDone && now >= ev.t) {
