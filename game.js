@@ -448,10 +448,11 @@ async function startRound() {
         }
         const list = players || NET.lastPlayers || [];
         const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
+        const readyCount = list.filter(function(p) { return p.ready; }).length;
         // 対戦中の部屋に後から入った場合、その試合が終わるまでは始まらない
         // （サーバーは試合の終了を知らないため正確な表示はフェーズ3で対応）
         G.introText = humanCount >= 2
-          ? "参加者 " + humanCount + " 人　全員が押すと開始…"
+          ? "スタート済み " + readyCount + "/" + humanCount + " 人（全員で開始）"
           : "参加者 " + humanCount + " 人　相手の入室待ち…";
       };
       NET.onRoster(updateWaitingText);
