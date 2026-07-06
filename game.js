@@ -394,6 +394,17 @@ async function startRound() {
       // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
       if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
         if (seat === -1) {
+          // 開始前の待機中の切断は黙って張り直す（スマホがタブを離れると
+          // ソケットが静かに死に、スタート直後に切断通知が届くことがある）。
+          // 張り直しが続く場合だけ諦めて知らせる
+          if (G.mode === "intro" && round && !round.event) {
+            G._wsRetry = (G._wsRetry || 0) + 1;
+            if (G._wsRetry <= 5) {
+              G.introText = "接続中…";
+              setTimeout(function() { NET.ensureConnected(); }, 300 * G._wsRetry);
+              return;
+            }
+          }
           gameOver("サーバーとの接続が切れました");
         } else if (seat === -2) {
           gameOver("部屋が満員です");
@@ -1286,7 +1297,14 @@ canvas.addEventListener("mousedown", (e) => {
 
 // タブ復帰時にiOSが音声を止めたままにする場合がある
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) ensureAudioRunning();
+  if (!document.hidden) {
+    ensureAudioRunning();
+    // スマホはタブを離れるとソケットが静かに死ぬことがある。
+    // 待機中に戻ってきたら先回りで張り直す
+    if (G.online && NET.wsMode && G.mode === "intro" && round && !round.event) {
+      NET.ensureConnected();
+    }
+  }
 });
 
 // タブを閉じた・別ページへ移動したときも退出を通知する

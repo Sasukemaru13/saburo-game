@@ -436,6 +436,7 @@ const NET = {
       this.mySeat = msg.seat;
       setSeat(msg.seat);
       this.connected = true;
+      if (typeof G !== "undefined") G._wsRetry = 0; // 再接続成功でリトライ計数をリセット
       this.lastPlayers = msg.players || null; // 最新の在室者（待機画面が後から参照する）
       // 時計同期を開始
       this._startClockSync();
