@@ -620,34 +620,6 @@ function drawTitle(G, now) {
   drawStage(now);
   drawVignette();
 
-  // オンライン（WS）時: 部屋の在室数を常時表示（rosterで即時更新される）
-  if (G.online && NET.wsMode) {
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 8;
-    ctx.fillStyle = "rgba(38, 43, 61, 0.92)";
-    rrect(150, 22, 180, 34, 10);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.shadowColor = "transparent";
-    ctx.fillStyle = "#8ec9ff";
-    const label = NET.connected
-      ? "部屋にいる人: " + (NET.lastPlayers ? NET.lastPlayers.length : 1) + "/4"
-      : "接続中…";
-    fillTextFit(label, 240, 40, 15, 800, 170);
-    // 在室者の名前一覧（長い名前は切り詰め＋全体は自動縮小ではみ出さない）
-    if (NET.connected && NET.lastPlayers && NET.lastPlayers.length) {
-      const names = NET.lastPlayers.map(function(p) {
-        const n = p.name || "?";
-        return n.length > 8 ? n.slice(0, 8) + "…" : n;
-      }).join("・");
-      ctx.fillStyle = "#9aa3c0";
-      fillTextFit(names, 240, 72, 14, 700, 440);
-    }
-    ctx.textBaseline = "alphabetic";
-  }
-
   // ロゴ: でかい指さし手（ふわふわ浮かせる）。
   // 真上向きは中指を立てているように見えるため、斜め上をさす
   const handX = 220;
@@ -677,6 +649,35 @@ function drawTitle(G, now) {
   ctx.fillStyle = "#c5cce6";
   ctx.font = F(17);
   ctx.fillText("リズムに乗って、さし合え。", 240, 436);
+
+  // オンライン（WS）時: 部屋の在室数と名前を常時表示（rosterで即時更新される）。
+  // 指のイラストより後（上のレイヤー）に描くこと（下に隠れて見えなくなった前科あり）
+  if (G.online && NET.wsMode) {
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = "rgba(38, 43, 61, 0.92)";
+    rrect(150, 22, 180, 34, 10);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#8ec9ff";
+    const label = NET.connected
+      ? "部屋にいる人: " + (NET.lastPlayers ? NET.lastPlayers.length : 1) + "/4"
+      : "接続中…";
+    fillTextFit(label, 240, 40, 15, 800, 170);
+    // 在室者の名前一覧（長い名前は切り詰め＋全体は自動縮小ではみ出さない）
+    if (NET.connected && NET.lastPlayers && NET.lastPlayers.length) {
+      const names = NET.lastPlayers.map(function(p) {
+        const n = p.name || "?";
+        return n.length > 8 ? n.slice(0, 8) + "…" : n;
+      }).join("・");
+      ctx.fillStyle = "#9aa3c0";
+      fillTextFit(names, 240, 72, 14, 700, 440);
+    }
+    ctx.textBaseline = "alphabetic";
+  }
 
   // 難易度ピル（横並び）
   const keys = Object.keys(DIFFICULTIES);

@@ -1103,7 +1103,17 @@ async function hardResetAudio() {
   try { audioCtx.close(); } catch (e) { /* 既にclosedでも構わない */ }
   audioCtx = null;
   try {
-    await startRound();
+    if (G.online) {
+      // オンライン対戦中に「最初からやり直す」と自分だけ新しい試合が始まり
+      // ライフも3に戻って大事故になる（実対戦で発生）。対戦から抜ける扱いにして
+      // 音声を作り直し、本人はもう一度スタートし直してもらう
+      ensureAudioCtx();
+      await initAudio();
+      NET.sendLeave();
+      gameOver("音声が止まったため対戦から抜けました（もう一度どうぞ）");
+    } else {
+      await startRound();
+    }
   } finally {
     resettingAudio = false;
   }
