@@ -16,6 +16,8 @@
 <!-- ?v= はキャッシュ対策。コード更新時に数字を上げること -->
 <script src="assets/audio-data.js?v=16"></script>
 <script src="render.js?v=16"></script>
+<!-- net.js は game.js より先に読む（NET オブジェクトを game.js が参照するため） -->
+<script src="net.js?v=16"></script>
 <script src="game.js?v=16"></script>
 </body>
 </html>

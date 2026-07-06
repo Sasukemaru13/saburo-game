@@ -886,6 +886,30 @@ function drawSpeedup(G) {
   ctx.restore();
 }
 
+// ---------- オンライン: 席の種別バッジ（人間席に "人" マーク） ----------
+
+function drawOnlineBadges(G) {
+  if (!G.online || !G.humanSeats) return;
+  for (let local = 1; local <= 3; local++) {
+    if (!G.humanSeats.includes(local)) continue;
+    const pos = CPU_POS[local];
+    const bx = pos.x + 20 * pos.s;
+    const by = pos.y - 62 * pos.s;
+    ctx.fillStyle = "#4d7de8";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 6;
+    rrect(bx - 14, by - 11, 28, 20, 6);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = F(11, 800);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("人", bx, by);
+  }
+}
+
 // メイン描画。game.js から毎フレーム呼ばれる
 function render(G, now) {
   if (G.mode === "title") {
@@ -919,6 +943,7 @@ function render(G, now) {
   drawBeatRing(G);
   for (let i = 1; i <= 3; i++) drawCpu(G, i, now);
   for (let i = 1; i <= 3; i++) drawCpuOverlay(G, i, now);
+  drawOnlineBadges(G);
   drawVignette(); // 指された強調はしない（手袋が迫ってくるのを見て反応するゲーム性を保つ）
   drawPlayerHands(G, now);
   ctx.restore();

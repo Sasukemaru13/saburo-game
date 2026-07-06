@@ -10,13 +10,41 @@ const RAMP_EVERY = 8;    // この拍数ごとにテンポが上がる
 const RAMP_FACTOR = 0.96;
 
 // 0=プレイヤー(手前) 1=左 2=正面 3=右
-function makeChars() {
-  return [
-    { name: "あなた", color: "#e8554d", pitch: 1.0,  anim: null },
-    { name: "一郎",   color: "#4d7de8", pitch: 0.82, anim: null },
-    { name: "二郎",   color: "#4db35e", pitch: 1.22, anim: null },
-    { name: "四郎",   color: "#c78b2e", pitch: 1.45, anim: null },
-  ];
+function makeChars(onlinePlayers) {
+  // 1人用（デフォルト）: 従来どおりの固定キャラ
+  if (!onlinePlayers) {
+    return [
+      { name: "あなた", color: "#e8554d", pitch: 1.0,  anim: null },
+      { name: "一郎",   color: "#4d7de8", pitch: 0.82, anim: null },
+      { name: "二郎",   color: "#4db35e", pitch: 1.22, anim: null },
+      { name: "四郎",   color: "#c78b2e", pitch: 1.45, anim: null },
+    ];
+  }
+  // オンライン版: joined で受け取った players 配列（絶対席）をローカル席0基準に並べ直す
+  // 固定カラー・ピッチは絶対席番号で決める（全クライアントで統一）
+  const COLORS = ["#e8554d", "#4d7de8", "#4db35e", "#c78b2e"];
+  const PITCHES = [1.0, 0.82, 1.22, 1.45];
+  const CPU_NAMES = ["あなた", "一郎", "二郎", "四郎"];
+  const chars = [];
+  for (let local = 0; local < 4; local++) {
+    const abs = toAbs(local);
+    const player = onlinePlayers.find(function(p) { return p.seat === abs; });
+    if (player) {
+      chars.push({
+        name: player.kind === "human"
+          ? (local === 0 ? "あなた" : "P" + (abs + 1))
+          : CPU_NAMES[abs],
+        color: COLORS[abs],
+        pitch: PITCHES[abs],
+        anim: null,
+        kind: player.kind,
+      });
+    } else {
+      // 席が埋まっていなければCPUで埋める
+      chars.push({ name: CPU_NAMES[abs], color: COLORS[abs], pitch: PITCHES[abs], anim: null, kind: "cpu" });
+    }
+  }
+  return chars;
 }
 
 const KEY_TARGET = { a: 1, w: 2, d: 3 };
@@ -47,6 +75,14 @@ const G = {
   now: 0,        // 音声クロック（render側のアニメ進行に使う）
   popups: [],    // +1/+2ポップアップ
   speedupAt: 0,  // 直近のテンポアップ時刻
+
+  // ---------- オンライン対戦フィールド（?online=1 のときのみ使用） ----------
+  online: false,         // オンラインモード中かどうか
+  players: null,         // 席情報配列 [{seat, name, kind:"human"|"cpu"},...] （joined受信後に設定）
+  humanSeats: [],        // 人間が座っている絶対席番号のリスト（ローカル席に変換済み）
+  // 人間手番ゲート: beat番号 → {resolve:[localSeat,...], pendingSeats:Set<localSeat>}
+  // pendingSeats が空になったら全員確定
+  _inputGate: null,
 };
 
 // ---------- 音声 ----------
@@ -276,7 +312,8 @@ async function startRound() {
   if (audioCtx.state !== "running") audioCtx.resume().catch(() => {});
 
   G.diff = DIFFICULTIES[G.difficulty];
-  G.chars = makeChars();
+  // オンライン時は NET.init() で確定した players を使う。1人用は null で従来固定キャラ
+  G.chars = G.online ? makeChars(G.players) : makeChars();
   G.mode = "intro";
   G.turnActor = null;
   G.score = 0;
@@ -285,6 +322,7 @@ async function startRound() {
   G.bpmNow = G.diff.bpm;
   G.popups = [];
   G.speedupAt = 0;
+  G._inputGate = null;
 
   round = {
     t0: 0,
@@ -295,18 +333,68 @@ async function startRound() {
     pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
     event: null,
     awaitingClock: true, // 音声時計が動き出した瞬間にarmRoundで開始時刻を確定する
+    beatCounter: 0,
   };
-  if (audioCtx.state === "running") armRound();
+
+  if (G.online) {
+    // オンライン時は awaitingClock フラグを使わず、NET の start コールバックで armRound を呼ぶ
+    round.awaitingClock = false;
+
+    NET.onStart(function(msg) {
+      // start メッセージを受けたら（ホスト自身も含む）armRound を実行
+      if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
+      armRound(msg.t0);
+    });
+
+    NET.onInput(handleRemoteInput);
+
+    if (NET.mySeat === 0) {
+      // ホスト: 開始時刻を決めてブロードキャスト（2秒後に始まる）
+      const t0 = audioCtx.currentTime + 2.0;
+      // players 配列を組み立てる（ローカル2タブ版: seat=0が人間、残りCPU）
+      const players = [
+        { seat: 0, name: "あなた", kind: "human" },
+        { seat: 1, name: "P2", kind: "human" }, // seat=1 も人間（2タブ対戦）
+        { seat: 2, name: "二郎", kind: "cpu" },
+        { seat: 3, name: "四郎", kind: "cpu" },
+      ];
+      G.players = players;
+      // humanSeats を更新（ローカル席番号）
+      G.humanSeats = players
+        .filter(function(p) { return p.kind === "human"; })
+        .map(function(p) { return toLocal(p.seat); });
+      NET.broadcastStart(t0, NET.cpuSeed, players);
+    } else {
+      // ゲスト: start メッセージを待つ（コールバック登録済み）
+      // G.players と G.humanSeats は start コールバック内で設定する
+      NET.onStart(function(msg) {
+        // ゲスト用: players を受け取って設定
+        if (msg.players) {
+          G.players = msg.players;
+          G.humanSeats = msg.players
+            .filter(function(p) { return p.kind === "human"; })
+            .map(function(p) { return toLocal(p.seat); });
+          G.chars = makeChars(G.players);
+        }
+        // armRound は最初のコールバック（上で登録済み）が呼ぶ
+      });
+    }
+  } else {
+    // 1人用: 従来どおり音声時計が動き出したら armRound
+    if (audioCtx.state === "running") armRound();
+  }
 }
 
 // 開始時刻を「音声時計が動いている今」基準で確定してイントロをスケジュールする。
 // iOSでresumeの完了が遅れても、完了した時点からきれいに始まり、宙ぶらりんにならない
-function armRound() {
-  const t0 = audioCtx.currentTime + 0.5;
+function armRound(t0Override) {
+  // オンライン時はホストが配布した t0 を使う。1人用は従来どおり現在時刻+0.5
+  const t0 = (t0Override !== undefined) ? t0Override : audioCtx.currentTime + 0.5;
   round.t0 = t0;
   round.phaseT = t0;
-  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: 0 };
+  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: 0, beat: 0 };
   round.awaitingClock = false;
+  round.beatCounter = 0; // 通し拍番号（人間手番ゲートのキー）
   // 1.2はバンドパスで削れる分の補償。声(1.0)と並んでも埋もれない音量にする
   for (const b of INTRO_CLAPS) playClap(t0 + b * round.interval, 1.2);
   playTick(round.event.t);
@@ -374,6 +462,10 @@ function winNow() {
 
 function advanceEvent(nextEvent) {
   round.phaseT = nextEvent.t - round.interval;
+  // 通し拍番号を採番（人間手番ゲートのキー）
+  if (round.beatCounter === undefined) round.beatCounter = 0;
+  round.beatCounter++;
+  nextEvent.beat = round.beatCounter;
   round.event = nextEvent;
   playTick(nextEvent.t);
 }
@@ -415,7 +507,12 @@ function doPoint(actor, targets) {
 function prepareCpu() {
   const ev = round.event;
   if (ev.type === "point" && ev.actor !== 0) {
-    ev.cpuActAt = ev.t + (Math.random() - 0.5) * 0.05;
+    // オンライン時: ジッターもシード乱数で全クライアントが同じ値を引く（見た目一致）
+    // 1人用: 従来どおり Math.random
+    const jitter = G.online
+      ? (NET.rng()() - 0.5) * 0.05
+      : (Math.random() - 0.5) * 0.05;
+    ev.cpuActAt = ev.t + jitter;
     ev.cpuDone = false;
   }
 }
@@ -423,13 +520,17 @@ function prepareCpu() {
 function cpuChooseTargets(actor) {
   const others = [0, 1, 2, 3].filter((i) => i !== actor);
   const canDouble = round.consec[actor] < 2;
-  if (canDouble && Math.random() < G.diff.cpuDouble) {
-    const i = Math.floor(Math.random() * 3);
-    let j = Math.floor(Math.random() * 2);
+  // オンライン時: 全クライアントが同じ乱数列を引く（決定論の核心）
+  // 乱数の呼び出し順は「拍の進行（advanceEvent → prepareCpu → cpuChooseTargets）」
+  // だけに依存し、描画・ローカル入力には依存しない
+  const rnd = G.online ? NET.rng() : Math.random.bind(Math);
+  if (canDouble && rnd() < G.diff.cpuDouble) {
+    const i = Math.floor(rnd() * 3);
+    let j = Math.floor(rnd() * 2);
     if (j >= i) j++;
     return [others[i], others[j]];
   }
-  return [others[Math.floor(Math.random() * 3)]];
+  return [others[Math.floor(rnd() * 3)]];
 }
 
 // プレイヤーの指差し入力を確定する（同時押し収集後に呼ばれる）
@@ -441,12 +542,23 @@ function resolvePlayerPoint() {
   if (ev.type !== "point" || ev.actor !== 0) return;
 
   if (Math.abs(t - ev.t) > winNow()) {
-    gameOver(t < ev.t ? "早すぎた！" : "遅すぎた！");
+    const reason = t < ev.t ? "早すぎた！" : "遅すぎた！";
+    if (G.online) {
+      // オンライン時: miss を送信してから gameOver（フェーズ1簡易版）
+      NET.sendInput(ev.beat, "point", keys, "miss");
+    }
+    gameOver(reason);
     return;
   }
   if (keys.length === 2 && round.consec[0] >= 2) {
+    if (G.online) NET.sendInput(ev.beat, "point", keys, "miss");
     gameOver("同時さしは連続2回まで！");
     return;
+  }
+
+  if (G.online) {
+    // オンライン時: 自分の成功を送信し、ローカルには即適用
+    NET.sendInput(ev.beat, "point", keys, "ok");
   }
   doPoint(0, keys);
 }
@@ -454,12 +566,82 @@ function resolvePlayerPoint() {
 function resolvePlayerHaihai(t) {
   const ev = round.event;
   if (Math.abs(t - ev.t) > winNow()) {
-    gameOver(t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！");
+    const reason = t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！";
+    if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
+    gameOver(reason);
     return;
   }
   playVoice("haihai", G.chars[0].pitch);
   G.chars[0].anim = { type: "haihai", start: audioCtx.currentTime, until: ev.t + round.interval * 0.9 };
-  ev.playerDone = true;
+
+  if (G.online) {
+    // オンライン時: 自分のハイハイ完了を送信し、playerDoneSeats に記録
+    NET.sendInput(ev.beat, "haihai", [], "ok");
+    if (!ev.playerDoneSeats) ev.playerDoneSeats = {};
+    ev.playerDoneSeats[0] = true;
+    _checkHaihaiDone(ev);
+  } else {
+    ev.playerDone = true;
+  }
+}
+
+// ---------- オンライン: リモート人間の入力を受けたときの処理 ----------
+// net.js の NET.onInput コールバックから呼ばれる
+function handleRemoteInput(beat, localSeat, action, localTargets, result) {
+  if (G.mode === "gameover") return;
+  if (!round || !round.event) return;
+
+  // フェーズ1簡易版: missが届いたら全員試合終了
+  if (result === "miss") {
+    gameOver("P" + (toAbs(localSeat) + 1) + " がリズムを外した！");
+    return;
+  }
+
+  const ev = round.event;
+
+  if (action === "point") {
+    // リモート人間の指差しを適用
+    if (ev.type === "point" && ev.actor === localSeat) {
+      doPoint(localSeat, localTargets);
+    }
+    // ゲートから当該席を除去
+    if (G._inputGate && G._inputGate.beat === beat) {
+      G._inputGate.pendingSeats.delete(localSeat);
+    }
+  } else if (action === "haihai") {
+    // リモート人間のハイハイを適用
+    if (ev.type === "haihai" && ev.actors.includes(localSeat) && !ev.playerDoneSeats) {
+      ev.playerDoneSeats = {};
+    }
+    if (ev.type === "haihai") {
+      if (!ev.playerDoneSeats) ev.playerDoneSeats = {};
+      ev.playerDoneSeats[localSeat] = true;
+      playVoice("haihai", G.chars[localSeat].pitch);
+      G.chars[localSeat].anim = {
+        type: "haihai",
+        start: audioCtx.currentTime,
+        until: ev.t + round.interval * 0.9,
+      };
+      // 全人間席が揃ったか確認（update側の playerDone と整合させる）
+      _checkHaihaiDone(ev);
+    }
+  }
+}
+
+// ハイハイ完了チェック: 人間全員が done になったら ev.playerDone をセット
+function _checkHaihaiDone(ev) {
+  if (!ev.actors) return;
+  const humanActors = ev.actors.filter(function(a) {
+    return G.chars[a] && G.chars[a].kind === "human";
+  });
+  // 1人用では kind が未定義のため全員 playerDone = true として進む（既存動作を壊さない）
+  if (humanActors.length === 0) {
+    ev.playerDone = true;
+    return;
+  }
+  if (!ev.playerDoneSeats) return;
+  const allDone = humanActors.every(function(a) { return ev.playerDoneSeats[a]; });
+  if (allDone) ev.playerDone = true;
 }
 
 // ---------- メインループ ----------
@@ -501,21 +683,28 @@ function update() {
 
   if (ev.type === "point") {
     if (ev.actor === 0) {
-      // プレイヤーの番: 時間切れ判定
+      // 自分（ローカル0番）の番: 時間切れ判定
       if (now > ev.t + win && !round.pendingKeys) {
+        if (G.online) NET.sendInput(ev.beat, "point", [], "miss");
         gameOver("反応できなかった…");
       }
+    } else if (G.online && G.humanSeats && G.humanSeats.includes(ev.actor)) {
+      // オンライン時: リモート人間の番 → resolve（handleRemoteInput）が来るまで待つだけ
+      // タイムアウトはフェーズ3（サーバー審判）で実装。フェーズ1は性善説でスキップ
     } else if (!ev.cpuDone && now >= ev.cpuActAt) {
+      // CPUの番: 従来どおりローカル決定論で進める
       ev.cpuDone = true;
       doPoint(ev.actor, cpuChooseTargets(ev.actor));
     }
   } else if (ev.type === "haihai") {
-    // CPU側のハイハイは拍ちょうどに実行
+    // CPU側のハイハイは拍ちょうどに実行（人間席はスキップ: handleRemoteInput で処理する）
     if (!ev.cpuDone && now >= ev.t) {
       ev.cpuDone = true;
       let delay = 0;
       for (const a of ev.actors) {
         if (a === 0) continue;
+        // オンライン時: 人間席はリモートの入力で処理する
+        if (G.online && G.humanSeats && G.humanSeats.includes(a)) continue;
         playVoice("haihai", G.chars[a].pitch, ev.t + delay);
         G.chars[a].anim = { type: "haihai", start: ev.t, until: ev.t + round.interval * 0.9 };
         delay += 0.03;
@@ -523,6 +712,7 @@ function update() {
     }
     // プレイヤーが含まれる場合の時間切れ
     if (!ev.playerDone && now > ev.t + win) {
+      if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
       gameOver("ハイハイできなかった…");
       return;
     }
@@ -787,5 +977,10 @@ canvas.addEventListener("mousedown", (e) => {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) ensureAudioRunning();
 });
+
+// NET を初期化する（?online=1 があるときだけ有効になる）
+// net.js が先に読み込まれている必要がある（index.html の script 順で保証）
+NET.init();
+G.online = NET.online;
 
 requestAnimationFrame(loop);
