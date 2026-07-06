@@ -365,6 +365,10 @@ async function startRound() {
     NET.onStart(function(msg) {
       // 自分がスタート待ち状態のときだけ受け付ける（ゲームオーバー画面等での誤発動防止）
       if (G.mode !== "intro") return;
+      // すでに試合が組まれている（armRound済み）なら二発目のstartは無視する。
+      // ready再送が開始と行き違うとサーバーが二重にstartを配ることがあり、
+      // これを受けるとイントロ中に試合が組み直されて「勝手にスタート」に見える
+      if (round && round.event) return;
       // 難易度はホストの指定に合わせる（拍間隔・判定窓・CPU同時さし確率＝乱数消費が
       // 全タブで一致しないと決定論が壊れる）
       if (msg.difficulty && DIFFICULTIES[msg.difficulty]) {
