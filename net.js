@@ -114,7 +114,7 @@ const NET = {
   room: "default",
   mySeat: 0,
   cpuSeed: 0,
-  t0Server: 0,        // ホストが決めた開始時刻（audioCtx基準・同一マシンなので共用）
+  t0Server: 0,        // ホストが決めた開始時刻（壁時計 Date.now() 基準・ms。audioCtxはタブごとに独立時計なので不可）
 
   // 送受信コールバック
   _transport: null,

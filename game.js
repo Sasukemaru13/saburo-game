@@ -351,14 +351,20 @@ async function startRound() {
         G.chars = makeChars(G.players);
       }
       if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
-      armRound(msg.t0);
+      // msg.t0 は壁時計（Date.now()・ms）。audioCtx.currentTime はタブごとに独立した
+      // 時計なのでそのまま使えない。受信時点の差分でローカル音声時計に変換する
+      const t0Local = audioCtx.currentTime + (msg.t0 - Date.now()) / 1000;
+      if (t0Local < audioCtx.currentTime + 0.2) {
+        console.warn("saburo: start時刻が過去/直近すぎる (受信遅れ?)", msg.t0, t0Local);
+      }
+      armRound(t0Local);
     });
 
     NET.onInput(handleRemoteInput);
 
     if (NET.mySeat === 0) {
-      // ホスト: 開始時刻を決めてブロードキャスト（2秒後に始まる）
-      const t0 = audioCtx.currentTime + 2.0;
+      // ホスト: 開始時刻を壁時計（ms）で決めてブロードキャスト（2秒後に始まる）
+      const t0 = Date.now() + 2000;
       // players 配列を組み立てる（ローカル2タブ版: seat=0とseat=1が人間、残りCPU）
       const players = [
         { seat: 0, name: "P1", kind: "human" },
