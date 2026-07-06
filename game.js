@@ -399,7 +399,7 @@ async function startRound() {
           gameOver("部屋が満員です");
         } else {
           const local = toLocal(seat);
-          const name = (G.chars[local] && G.chars[local].name) || "相手";
+          const name = seatDisplayName(local);
           gameOver(name + " が退出しました");
         }
       }
@@ -506,7 +506,7 @@ function armRound(t0Override, firstActorLocal) {
   const firstActor = (firstActorLocal !== undefined)
     ? firstActorLocal
     : (G.online ? toLocal(0) : 0);
-  G.starterName = G.chars[firstActor] ? G.chars[firstActor].name : "";
+  G.starterName = G.chars[firstActor] ? seatDisplayName(firstActor) : "";
   G.onlineWaiting = false; // 待ち合わせ終了
   // 通し拍番号はリスタートを跨いでも巻き戻さない（人間手番ゲート・ミス重複防止のキー）
   if (round.beatCounter === undefined) round.beatCounter = 0;
@@ -564,6 +564,12 @@ function gameOver(reason) {
   }
 }
 
+// 表示用の席名。自席は「◯◯（あなた）」だと長いので、文中では「あなた」に短縮する
+function seatDisplayName(localSeat) {
+  if (localSeat === 0) return "あなた";
+  return (G.chars[localSeat] && G.chars[localSeat].name) || "P" + (toAbs(localSeat) + 1);
+}
+
 // ---------- オンライン: ミス処理（ライフ制） ----------
 // 自分のミスはここを必ず通す（1人用は従来どおり即gameOver）
 function reportSelfMiss(reason) {
@@ -589,7 +595,7 @@ function handleMiss(seat, reason, beat) {
 
   playBuzzer();
   G.lives[seat] = Math.max(0, (G.lives[seat] || 0) - 1);
-  const name = G.chars[seat].name;
+  const name = seatDisplayName(seat);
 
   if (G.lives[seat] <= 0) {
     // 死亡: 以降この席はCPUが代走する（死亡時のクドス支払いはフェーズ4=ゼウスくん側）
@@ -603,7 +609,7 @@ function handleMiss(seat, reason, beat) {
     if (G.chars[i] && G.chars[i].kind === "human") alive.push(i);
   }
   if (alive.length <= 1) {
-    gameOver(alive.length === 1 ? G.chars[alive[0]].name + " の勝ち！" : "引き分け…");
+    gameOver(alive.length === 1 ? seatDisplayName(alive[0]) + " の勝ち！" : "引き分け…");
     return;
   }
 
@@ -830,7 +836,7 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result) {
 
   // リモートのミス: ライフ制の共通処理へ（重複はhandleMiss側でbeat:seatキーで弾く）
   if (result === "miss") {
-    handleMiss(localSeat, G.chars[localSeat].name + " がリズムを外した！", beat);
+    handleMiss(localSeat, seatDisplayName(localSeat) + " がリズムを外した！", beat);
     return;
   }
 
