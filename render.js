@@ -816,11 +816,24 @@ function drawGameOver(G) {
 }
 
 function drawIntro(G) {
-  ctx.fillStyle = "#ffd95e";
-  ctx.font = F(32, 800);
   ctx.textAlign = "center";
   ctx.shadowColor = "rgba(0,0,0,0.6)";
   ctx.shadowBlur = 8;
+  // オンライン: 直前のミス内容と開始者をイントロ中に表示する
+  if (G.online) {
+    if (G.missInfo) {
+      ctx.fillStyle = "#ff8a80";
+      ctx.font = F(18, 800);
+      ctx.fillText(G.missInfo, 240, 110);
+    }
+    if (G.starterName) {
+      ctx.fillStyle = "#8ec9ff";
+      ctx.font = F(22, 800);
+      ctx.fillText(G.starterName + " からスタート！", 240, 140);
+    }
+  }
+  ctx.fillStyle = "#ffd95e";
+  ctx.font = F(32, 800);
   ctx.fillText(G.introText || "", 240, 170);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
@@ -886,28 +899,53 @@ function drawSpeedup(G) {
   ctx.restore();
 }
 
-// ---------- オンライン: 席の種別バッジ（人間席に "人" マーク） ----------
+// ---------- オンライン: 名前ラベル＋ライフ表示 ----------
+// 各キャラの頭上に名前（将来はDiscord名が入る）とライフ（残り数ぶんの点）を描く
+
+function drawSeatLabel(G, local, x, y, s) {
+  const ch = G.chars[local];
+  if (!ch) return;
+  const isHuman = ch.kind === "human";
+  // 名前プレート
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = isHuman ? "rgba(35,48,92,0.92)" : "rgba(40,40,52,0.75)";
+  const w = Math.max(56, ch.name.length * 13 + 18);
+  rrect(x - w / 2, y - 12, w, 22, 7);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = isHuman ? "#ffffff" : "#b8bdd0";
+  ctx.font = F(12, 800);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(ch.name, x, y - 1);
+  // ライフ（人間のみ・残り数ぶんの点。死亡は「代走中」）
+  if (G.lives && isHuman) {
+    const lives = G.lives[local];
+    for (let k = 0; k < 3; k++) {
+      ctx.beginPath();
+      ctx.arc(x - 14 + k * 14, y + 17, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = k < lives ? "#ff6f7d" : "rgba(255,255,255,0.18)";
+      ctx.fill();
+    }
+  } else if (G.lives && !isHuman && G.lives[local] === 0) {
+    ctx.fillStyle = "#8a90a8";
+    ctx.font = F(11, 700);
+    ctx.fillText("代走中", x, y + 18);
+  }
+  ctx.textBaseline = "alphabetic";
+}
 
 function drawOnlineBadges(G) {
-  if (!G.online || !G.humanSeats) return;
+  if (!G.online || !G.chars) return;
+  // 向かいの3席: キャラ頭上
   for (let local = 1; local <= 3; local++) {
-    if (!G.humanSeats.includes(local)) continue;
     const pos = CPU_POS[local];
-    const bx = pos.x + 20 * pos.s;
-    const by = pos.y - 62 * pos.s;
-    ctx.fillStyle = "#4d7de8";
-    ctx.shadowColor = "rgba(0,0,0,0.5)";
-    ctx.shadowBlur = 6;
-    rrect(bx - 14, by - 11, 28, 20, 6);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.shadowColor = "transparent";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = F(11, 800);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("人", bx, by);
+    drawSeatLabel(G, local, pos.x + 20 * pos.s, pos.y - 74 * pos.s, pos.s);
   }
+  // 自分（席0）: 画面下部の手元の上
+  drawSeatLabel(G, 0, 240, 590, 1);
 }
 
 // メイン描画。game.js から毎フレーム呼ばれる

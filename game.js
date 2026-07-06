@@ -83,6 +83,11 @@ const G = {
   // 人間手番ゲート: beat番号 → {resolve:[localSeat,...], pendingSeats:Set<localSeat>}
   // pendingSeats が空になったら全員確定
   _inputGate: null,
+  // ライフ制（ローカル席index）。ミスで-1、0で死亡=CPU代走。人間が1人になったら試合終了
+  lives: [3, 3, 3, 3],
+  starterName: "",       // このラウンドの開始者名（イントロで表示）
+  missInfo: "",          // 直前のミス内容（リスタートのイントロで表示）
+  _lastMissKey: null,    // ミスの重複処理防止（beat:seat）
 };
 
 // ---------- 音声 ----------
@@ -323,6 +328,10 @@ async function startRound() {
   G.popups = [];
   G.speedupAt = 0;
   G._inputGate = null;
+  G.lives = [3, 3, 3, 3];
+  G.missInfo = "";
+  G.starterName = "";
+  G._lastMissKey = null;
 
   round = {
     t0: 0,
@@ -398,17 +407,31 @@ async function startRound() {
 
 // 開始時刻を「音声時計が動いている今」基準で確定してイントロをスケジュールする。
 // iOSでresumeの完了が遅れても、完了した時点からきれいに始まり、宙ぶらりんにならない
-function armRound(t0Override) {
+function armRound(t0Override, firstActorLocal) {
   // オンライン時はホストが配布した t0 を使う。1人用は従来どおり現在時刻+0.5
   const t0 = (t0Override !== undefined) ? t0Override : audioCtx.currentTime + 0.5;
   round.t0 = t0;
   round.phaseT = t0;
-  // 最初の手番は「絶対席0」。1人用では自分（=0）、オンラインでは各タブのローカル座標に変換する
-  // （ここを各タブの「自分」にすると初手から進行が分岐する）
-  const firstActor = G.online ? toLocal(0) : 0;
-  round.event = { type: "point", t: t0 + FIRST_BEAT * round.interval, actor: firstActor, beat: 0 };
+  // 最初の手番: 指定があればその席（=最後にミスした人からのリスタート）。
+  // 指定なしの初回は「絶対席0」。1人用では自分（=0）、オンラインでは各タブの
+  // ローカル座標に変換する（ここを各タブの「自分」にすると初手から進行が分岐する）
+  const firstActor = (firstActorLocal !== undefined)
+    ? firstActorLocal
+    : (G.online ? toLocal(0) : 0);
+  G.starterName = G.chars[firstActor] ? G.chars[firstActor].name : "";
+  // 通し拍番号はリスタートを跨いでも巻き戻さない（人間手番ゲート・ミス重複防止のキー）
+  if (round.beatCounter === undefined) round.beatCounter = 0;
+  round.beatCounter++;
+  round.event = {
+    type: "point",
+    t: t0 + FIRST_BEAT * round.interval,
+    actor: firstActor,
+    beat: round.beatCounter,
+  };
   round.awaitingClock = false;
-  round.beatCounter = 0; // 通し拍番号（人間手番ゲートのキー）
+  // 開始者がCPU（死亡した席の代走を含む）なら行動タイミングを仕込む
+  // （1人用は開始者=自分なのでno-op。乱数消費は全タブ対称）
+  prepareCpu();
   // 1.2はバンドパスで削れる分の補償。声(1.0)と並んでも埋もれない音量にする
   for (const b of INTRO_CLAPS) playClap(t0 + b * round.interval, 1.2);
   playTick(round.event.t);
@@ -418,12 +441,68 @@ function gameOver(reason) {
   G.mode = "gameover";
   G.loseReason = reason;
   G.turnActor = null;
-  if (G.score > G.bests[G.difficulty]) {
+  // オンライン対戦のスコアはルールが別物なので1人用のベスト記録を汚さない
+  if (!G.online && G.score > G.bests[G.difficulty]) {
     G.bests[G.difficulty] = G.score;
     G.newBest = true;
     localStorage.setItem("saburo_best_" + G.difficulty, String(G.score));
   }
   playBuzzer();
+}
+
+// ---------- オンライン: ミス処理（ライフ制） ----------
+// 自分のミスはここを必ず通す（1人用は従来どおり即gameOver）
+function reportSelfMiss(reason) {
+  if (!G.online) {
+    gameOver(reason);
+    return;
+  }
+  // 死亡後（CPU代走中）の自分は判定対象外
+  if (G.chars[0] && G.chars[0].kind === "cpu") return;
+  const ev = round && round.event;
+  const beat = ev ? ev.beat : -1;
+  NET.sendInput(beat, "miss", [], "miss");
+  handleMiss(0, reason, beat);
+}
+
+// ミス確定（自分・リモート共通）。ライフを減らし、リスタートか試合終了へ
+function handleMiss(seat, reason, beat) {
+  const ev = round && round.event;
+  if (beat === undefined) beat = ev ? ev.beat : -1;
+  const key = beat + ":" + seat;
+  if (G._lastMissKey === key) return; // 同一ミスの重複処理防止
+  G._lastMissKey = key;
+
+  playBuzzer();
+  G.lives[seat] = Math.max(0, (G.lives[seat] || 0) - 1);
+  const name = G.chars[seat].name;
+
+  if (G.lives[seat] <= 0) {
+    // 死亡: 以降この席はCPUが代走する（死亡時のクドス支払いはフェーズ4=ゼウスくん側）
+    G.chars[seat].kind = "cpu";
+    G.humanSeats = G.humanSeats.filter(function(s) { return s !== seat; });
+  }
+
+  // 生き残りの人間が1人以下になったら試合終了
+  const alive = [];
+  for (let i = 0; i < 4; i++) {
+    if (G.chars[i] && G.chars[i].kind === "human") alive.push(i);
+  }
+  if (alive.length <= 1) {
+    gameOver(alive.length === 1 ? G.chars[alive[0]].name + " の勝ち！" : "引き分け…");
+    return;
+  }
+
+  // ライフが残っていれば「最後にミスした人」からリスタート（テンポは初速に戻す）
+  G.missInfo = name + " がミス（のこりライフ " + G.lives[seat] + "）";
+  const t0Next = (ev ? ev.t : audioCtx.currentTime) + 3.0;
+  round.interval = 60 / G.diff.bpm;
+  G.bpmNow = G.diff.bpm;
+  round.beats = 0;
+  round.consec = [0, 0, 0, 0];
+  round.pendingKeys = null;
+  G.mode = "intro";
+  armRound(t0Next, seat);
 }
 
 // 拍が進むごとに呼ぶ。RAMP_EVERY拍ごとにテンポを上げる（上限なし）
@@ -574,17 +653,11 @@ function resolvePlayerPoint() {
   if (ev.type !== "point" || ev.actor !== 0) return;
 
   if (Math.abs(t - ev.t) > winNow()) {
-    const reason = t < ev.t ? "早すぎた！" : "遅すぎた！";
-    if (G.online) {
-      // オンライン時: miss を送信してから gameOver（フェーズ1簡易版）
-      NET.sendInput(ev.beat, "point", keys, "miss");
-    }
-    gameOver(reason);
+    reportSelfMiss(t < ev.t ? "早すぎた！" : "遅すぎた！");
     return;
   }
   if (keys.length === 2 && round.consec[0] >= 2) {
-    if (G.online) NET.sendInput(ev.beat, "point", keys, "miss");
-    gameOver("同時さしは連続2回まで！");
+    reportSelfMiss("同時さしは連続2回まで！");
     return;
   }
 
@@ -598,9 +671,7 @@ function resolvePlayerPoint() {
 function resolvePlayerHaihai(t) {
   const ev = round.event;
   if (Math.abs(t - ev.t) > winNow()) {
-    const reason = t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！";
-    if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
-    gameOver(reason);
+    reportSelfMiss(t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！");
     return;
   }
   playVoice("haihai", G.chars[0].pitch);
@@ -623,13 +694,16 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result) {
   if (G.mode === "gameover") return;
   if (!round || !round.event) return;
 
-  // フェーズ1簡易版: missが届いたら全員試合終了
+  // リモートのミス: ライフ制の共通処理へ（重複はhandleMiss側でbeat:seatキーで弾く）
   if (result === "miss") {
-    gameOver("P" + (toAbs(localSeat) + 1) + " がリズムを外した！");
+    handleMiss(localSeat, G.chars[localSeat].name + " がリズムを外した！", beat);
     return;
   }
 
   const ev = round.event;
+  // 拍番号が一致するイベントにだけ適用する（リスタート直後などに古い入力が
+  // 新しいイベントへ誤適用されるのを防ぐ。拍番号は全タブで共通の通し番号）
+  if (ev.beat !== beat) return;
 
   if (action === "point") {
     // リモート人間の指差しを適用
@@ -703,7 +777,10 @@ function update() {
     const raw = (now - round.t0) / round.interval;
     const claps = INTRO_CLAPS.filter((b) => raw >= b).length;
     G.introText = ["", "タン", "タン　タン", "タン　タン　タ", "タン　タン　タタ", "タン　タン　タタ　タン"][claps];
-    if (raw >= 3.5) G.mode = "play";
+    if (raw >= 3.5) {
+      G.mode = "play";
+      G.missInfo = ""; // リスタート表示はプレイ開始で消す
+    }
   }
 
   // アニメーションの期限切れ
@@ -716,11 +793,10 @@ function update() {
   G.turnActor = ev.type === "point" ? ev.actor : null;
 
   if (ev.type === "point") {
-    if (ev.actor === 0) {
-      // 自分（ローカル0番）の番: 時間切れ判定
+    if (ev.actor === 0 && !(G.online && G.chars[0].kind === "cpu")) {
+      // 自分（ローカル0番）の番: 時間切れ判定（死亡後=CPU代走中は下のCPU分岐が担当）
       if (now > ev.t + win && !round.pendingKeys) {
-        if (G.online) NET.sendInput(ev.beat, "point", [], "miss");
-        gameOver("反応できなかった…");
+        reportSelfMiss("反応できなかった…");
       }
     } else if (G.online && G.humanSeats && G.humanSeats.includes(ev.actor)) {
       // オンライン時: リモート人間の番 → resolve（handleRemoteInput）が来るまで待つだけ
@@ -736,8 +812,9 @@ function update() {
       ev.cpuDone = true;
       let delay = 0;
       for (const a of ev.actors) {
-        if (a === 0) continue;
-        // オンライン時: 人間席はリモートの入力で処理する
+        // 自分の席は自分の入力で処理する（ただし死亡後=CPU代走中はCPUとして鳴らす）
+        if (a === 0 && !(G.online && G.chars[0].kind === "cpu")) continue;
+        // オンライン時: リモート人間席はリモートの入力で処理する
         if (G.online && G.humanSeats && G.humanSeats.includes(a)) continue;
         playVoice("haihai", G.chars[a].pitch, ev.t + delay);
         G.chars[a].anim = { type: "haihai", start: ev.t, until: ev.t + round.interval * 0.9 };
@@ -748,13 +825,13 @@ function update() {
     if (!ev.playerDone && now > ev.t + win) {
       // オンライン時、自分の分は済んでいて（または自分は無関係で）リモート人間待ちなら
       // 自分では判定しない（missはその人のタブが申告する）
-      const selfPending = ev.actors.includes(0) &&
+      const selfAlive = !(G.online && G.chars[0].kind === "cpu");
+      const selfPending = selfAlive && ev.actors.includes(0) &&
         !(ev.playerDoneSeats && ev.playerDoneSeats[0]);
       if (G.online && !selfPending) {
         // リモート待ち: 何もしない
       } else {
-        if (G.online) NET.sendInput(ev.beat, "haihai", [], "miss");
-        gameOver("ハイハイできなかった…");
+        reportSelfMiss("ハイハイできなかった…");
         return;
       }
     }
@@ -832,6 +909,8 @@ async function hardResetAudio() {
 // 指差し入力（target: 1=左 2=正面 3=右）
 function handlePointInput(target, t) {
   if (!round || !round.event) return; // 開始時刻の確定前は無視
+  // オンライン時、死亡後（CPU代走中）の自分の入力は受け付けない
+  if (G.online && G.chars[0] && G.chars[0].kind === "cpu") return;
   const ev = round.event;
   // イントロ中の早すぎる入力は無視（手拍子につられた分は許す）
   if (G.mode === "intro" && t < ev.t - winNow()) return;
@@ -844,19 +923,21 @@ function handlePointInput(target, t) {
       setTimeout(resolvePlayerPoint, 60); // 同時押し猶予
     }
   } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
-    gameOver("今はハイハイのタイミング！");
+    reportSelfMiss("今はハイハイのタイミング！");
   } else if (G.mode === "play") {
-    gameOver("自分の番じゃないのに指をさした！");
+    reportSelfMiss("自分の番じゃないのに指をさした！");
   }
 }
 
 function handleHaihaiInput(t) {
   if (!round || !round.event) return; // 開始時刻の確定前は無視
+  // オンライン時、死亡後（CPU代走中）の自分の入力は受け付けない
+  if (G.online && G.chars[0] && G.chars[0].kind === "cpu") return;
   const ev = round.event;
   if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
     resolvePlayerHaihai(t);
   } else if (G.mode === "play") {
-    gameOver("今はハイハイじゃない！");
+    reportSelfMiss("今はハイハイじゃない！");
   }
 }
 
