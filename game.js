@@ -1527,12 +1527,17 @@ function handleTapUI(pos) {
     return true;
   }
   if (G.mode === "ranking") {
-    // 難易度ピルのタップで切り替え
-    const card = hitDifficulty(pos);
-    if (card) {
-      G.difficulty = card;
-      fetchRankingScreen(card);
-      return true;
+    // 難易度ピルのタップで切り替え。当たり判定は描画と同じ RANKING_UI を使う
+    // （hitDifficultyはタイトル画面のピル座標なのでここでは使えない）
+    const keys = Object.keys(DIFFICULTIES);
+    for (let i = 0; i < RANKING_UI.pills.length; i++) {
+      const r = RANKING_UI.pills[i];
+      if (inRect(pos, r.x, r.y, r.w, r.h)) {
+        G.difficulty = keys[i];
+        playUiSelect(keys[i]);
+        fetchRankingScreen(keys[i]);
+        return true;
+      }
     }
     closeRanking();
     return true;
@@ -1609,6 +1614,19 @@ window.addEventListener("pagehide", () => {
 // net.js が先に読み込まれている必要がある（index.html の script 順で保証）
 NET.init();
 G.online = NET.online;
+
+// ?resetbest=1: この端末のベスト記録を消す（古い・身に覚えのない記録の掃除用。
+// サーバー側の記録を消してもローカルに残っていると同期で復活するため、両方消す手段が要る）
+(function() {
+  const params = new URLSearchParams(location.search);
+  if (params.get("resetbest") === "1") {
+    for (const k of Object.keys(DIFFICULTIES)) {
+      localStorage.removeItem("saburo_best_" + k);
+    }
+    G.bests = loadBests();
+    console.log("saburo: この端末のベスト記録をリセットしました");
+  }
+})();
 
 // 1人用かつ名前あり: ベスト記録をサーバーと同期する（非同期・失敗は無視）
 syncBestWithServer();

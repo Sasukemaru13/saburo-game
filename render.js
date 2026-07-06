@@ -844,6 +844,18 @@ function drawHowto(G, now) {
 }
 
 // ランキング画面（1人用のタイトルから開く）
+// ランキング画面の難易度ピルの当たり判定（game.jsのタップ判定と共有。
+// 描画もこの矩形を使う——描画と判定を別々に計算すると必ずズレる、が今日の教訓）
+const RANKING_UI = (function() {
+  const pilW = 110, pilH = 36, pilY = 122, gap = 10, n = 3;
+  const startX = (W - (n * pilW + (n - 1) * gap)) / 2;
+  const pills = [];
+  for (let i = 0; i < n; i++) {
+    pills.push({ x: startX + i * (pilW + gap), y: pilY, w: pilW, h: pilH });
+  }
+  return { pills: pills };
+})();
+
 function drawRanking(G, now) {
   drawStage(now);
   drawVignette();
@@ -865,23 +877,18 @@ function drawRanking(G, now) {
   ctx.font = F(26, 800);
   ctx.fillText("グローバルランキング", 240, 106);
 
-  // 難易度ピル（再fetchできる）
+  // 難易度ピル（タップ/1-3キーで再fetch。矩形は RANKING_UI と共有）
   const keys = Object.keys(DIFFICULTIES);
-  const pilW = 110;
-  const pilH = 36;
-  const pilY = 122;
-  const totalW = keys.length * pilW + (keys.length - 1) * 10;
-  const pilStartX = (W - totalW) / 2;
   keys.forEach(function(k, i) {
     const d = DIFFICULTIES[k];
-    const px = pilStartX + i * (pilW + 10);
+    const r = RANKING_UI.pills[i];
     const sel = G.rankingScreen && G.rankingScreen.difficulty === k;
     ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
-    rrect(px, pilY, pilW, pilH, pilH / 2);
+    rrect(r.x, r.y, r.w, r.h, r.h / 2);
     ctx.fill();
     ctx.fillStyle = sel ? "#222" : "#e8e4f5";
     ctx.font = F(14, 800);
-    ctx.fillText(IS_TOUCH ? d.label : (i + 1) + " " + d.label, px + pilW / 2, pilY + 24);
+    ctx.fillText(IS_TOUCH ? d.label : (i + 1) + " " + d.label, r.x + r.w / 2, r.y + 24);
   });
 
   // ランキング本体
