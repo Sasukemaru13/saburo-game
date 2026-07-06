@@ -420,12 +420,22 @@ async function startRound() {
           G._readyTimer = null;
         }
       }, 1000);
-      // 待機画面の人数情報を roster コールバックで更新する
-      NET.onRoster(function(players) {
+      // 待機画面の人数表示。rosterはスタートを押す前（接続直後）にも届いているので、
+      // 押した瞬間に手元の最新値（NET.lastPlayers）で即describeし、以後rosterで更新する
+      const updateWaitingText = function(players) {
         if (G.mode !== "intro" || (round && round.event)) return;
-        const humanCount = players.filter(function(p) { return p.kind === "human"; }).length;
-        G.introText = "参加者 " + humanCount + " 人　スタート待ち…";
-      });
+        if (!NET.connected) {
+          G.introText = "接続中…";
+          return;
+        }
+        const list = players || NET.lastPlayers || [];
+        const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
+        G.introText = humanCount >= 2
+          ? "参加者 " + humanCount + " 人　全員そろうと開始…"
+          : "参加者 " + humanCount + " 人　相手の入室待ち…";
+      };
+      NET.onRoster(updateWaitingText);
+      updateWaitingText(null);
     } else {
       // localモード: 従来どおりホスト主導で start を配る
       // 相手がすでに退出している状態で「もう一度」を押した場合は待たずに知らせる
@@ -470,9 +480,10 @@ async function startRound() {
     }
 
     // 待ち合わせ中の表示（armRoundが呼ばれてintroが進み始めると上書きされる）
-    G.introText = NET.wsMode
-      ? "接続中…"
-      : (NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…");
+    // WSモードの文言は updateWaitingText が管理済み（上で設定・roster更新）
+    if (!NET.wsMode) {
+      G.introText = NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…";
+    }
     G.onlineWaiting = true;
   } else {
     // 1人用: 従来どおり音声時計が動き出したら armRound
@@ -1074,7 +1085,10 @@ window.addEventListener("keydown", (e) => {
     if (key === "2") { G.difficulty = "normal"; playUiSelect("normal"); return; }
     if (key === "3") { G.difficulty = "hard"; playUiSelect("hard"); return; }
     if (key === "h") { openHowto(); return; }
-    startRound();
+    if (key === " ") {
+      e.preventDefault();
+      startRound();
+    }
     return;
   }
 

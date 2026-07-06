@@ -675,7 +675,7 @@ function drawTitle(G, now) {
   if (!IS_TOUCH) {
     ctx.fillStyle = "#9aa3c0";
     ctx.font = F(13);
-    ctx.fillText("好きなキーでもスタート", 240, s.y + s.h + 24);
+    ctx.fillText("Space でもスタート", 240, s.y + s.h + 24);
   }
 
   // あそびかた（小さく）

@@ -181,6 +181,7 @@ const NET = {
   online: false,
   wsMode: false,      // true = WSサーバー経由（フェーズ2）
   connected: false,   // WSモードで joined を受けた後に true
+  lastPlayers: null,  // 最新の在室者リスト（joined/rosterで更新・待機画面用）
 
   // オンラインパラメータ
   room: "default",
@@ -404,11 +405,13 @@ const NET = {
       this.mySeat = msg.seat;
       setSeat(msg.seat);
       this.connected = true;
+      this.lastPlayers = msg.players || null; // 最新の在室者（待機画面が後から参照する）
       // 時計同期を開始
       this._startClockSync();
       // roster 相当の初期メンバー通知
       if (this._onRosterCb && msg.players) this._onRosterCb(msg.players);
     } else if (msg.type === "roster") {
+      this.lastPlayers = msg.players || null;
       if (this._onRosterCb) this._onRosterCb(msg.players);
     } else if (msg.type === "pong") {
       this._handlePong(msg);
