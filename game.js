@@ -74,6 +74,7 @@ const G = {
   loseReason: "",
   introText: "",
   introSub: "",  // イントロ/待機画面の補足行（introTextの下に小さく表示）
+  waitNote: "",  // プレイ中の「○○の応答待ち…」表示（リモート人間の入力待ちが長引いた時）
   bpmNow: 100,
   now: 0,        // 音声クロック（render側のアニメ進行に使う）
   popups: [],    // +1/+2ポップアップ
@@ -349,6 +350,7 @@ async function startRound() {
     consec: [0, 0, 0, 0], // 同時さしの連続回数
     phaseT: 0,           // 描画用ビート位相の基準時刻
     pendingKeys: null,   // プレイヤーの指差し入力収集 {keys:[], t}
+    earlyInput: null,    // リモート手番の隙間に保留した早押し {kind:"point"|"haihai", keys, t}
     event: null,
     awaitingClock: true, // 音声時計が動き出した瞬間にarmRoundで開始時刻を確定する
     beatCounter: 0,
@@ -535,6 +537,8 @@ function armRound(t0Override, firstActorLocal) {
   G.starterName = G.chars[firstActor] ? seatDisplayName(firstActor) : "";
   G.onlineWaiting = false; // 待ち合わせ終了
   G.introSub = "";         // 待機中の補足行を消す（イントロのタンタン表示に混ざらないように）
+  G.waitNote = "";
+  round.earlyInput = null;
   // 通し拍番号はリスタートを跨いでも巻き戻さない（人間手番ゲート・ミス重複防止のキー）
   if (round.beatCounter === undefined) round.beatCounter = 0;
   round.beatCounter++;
@@ -647,6 +651,8 @@ function handleMiss(seat, reason, beat) {
   G.resumeSeat = seat;
   G.starterName = name;
   round.pendingKeys = null;
+  round.earlyInput = null;
+  G.waitNote = "";
   G.turnActor = null;
   G.mode = "interlude";
 }
@@ -729,6 +735,7 @@ function advanceEvent(nextEvent) {
   round.beatCounter++;
   nextEvent.beat = round.beatCounter;
   round.event = nextEvent;
+  G.waitNote = ""; // 待っていた入力が届いてイベントが進んだ
   playTick(nextEvent.t);
 }
 
@@ -878,6 +885,26 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result, reason
     // リモート人間の指差しを適用
     if (ev.type === "point" && ev.actor === localSeat) {
       doPoint(localSeat, localTargets);
+      // 情報が届く前に保留していた自分の早押しを、本来のタップ時刻で判定する
+      if (round.earlyInput) {
+        const early = round.earlyInput;
+        round.earlyInput = null;
+        const nev = round.event;
+        if (early.kind === "haihai") {
+          if (nev.type === "haihai" && nev.actors.includes(0) && !nev.playerDone) {
+            resolvePlayerHaihai(early.t);
+          } else {
+            reportSelfMiss("今はハイハイじゃない！");
+          }
+        } else {
+          if (nev.type === "point" && nev.actor === 0) {
+            round.pendingKeys = { keys: early.keys, t: early.t };
+            resolvePlayerPoint();
+          } else {
+            reportSelfMiss("自分の番じゃないのに指をさした！");
+          }
+        }
+      }
     }
     // ゲートから当該席を除去
     if (G._inputGate && G._inputGate.beat === beat) {
@@ -969,7 +996,11 @@ function update() {
       }
     } else if (G.online && G.humanSeats && G.humanSeats.includes(ev.actor)) {
       // オンライン時: リモート人間の番 → resolve（handleRemoteInput）が来るまで待つだけ
-      // タイムアウトはフェーズ3（サーバー審判）で実装。フェーズ1は性善説でスキップ
+      // タイムアウト裁定はフェーズ3（サーバー審判）。それまでは無言のフリーズに
+      // 見えないよう「応答待ち」を表示する
+      G.waitNote = now > ev.t + 1.5
+        ? seatDisplayName(ev.actor) + " の応答待ち…"
+        : "";
     } else if (!ev.cpuDone && now >= ev.cpuActAt) {
       // CPUの番: 従来どおりローカル決定論で進める
       ev.cpuDone = true;
@@ -998,7 +1029,8 @@ function update() {
       const selfPending = selfAlive && ev.actors.includes(0) &&
         !(ev.playerDoneSeats && ev.playerDoneSeats[0]);
       if (G.online && !selfPending) {
-        // リモート待ち: 何もしない
+        // リモート待ち: 判定はしないが、長引いたら表示だけ出す
+        if (now > ev.t + 1.5) G.waitNote = "ハイハイの応答待ち…";
       } else {
         reportSelfMiss("ハイハイできなかった…");
         return;
@@ -1078,6 +1110,13 @@ async function hardResetAudio() {
 }
 
 // 指差し入力（target: 1=左 2=正面 3=右）
+// オンライン: 「リモート人間の手番の直後」か（次イベントの情報がまだ届いていない隙間）。
+// この間の入力は誤りと断定できないので保留し、情報が届いてから本来のタップ時刻で判定する
+function inRemoteTurnGap(ev) {
+  return G.online && ev.type === "point" && ev.actor !== 0 &&
+    G.humanSeats && G.humanSeats.includes(ev.actor);
+}
+
 function handlePointInput(target, t) {
   if (!round || !round.event) return; // 開始時刻の確定前は無視
   // オンライン時、死亡後（CPU代走中）の自分の入力は受け付けない
@@ -1093,6 +1132,13 @@ function handlePointInput(target, t) {
       round.pendingKeys = { keys: [target], t };
       setTimeout(resolvePlayerPoint, 60); // 同時押し猶予
     }
+  } else if (inRemoteTurnGap(ev)) {
+    // 相手の指し先情報が届く前の早押し。保留して届いた時点で判定する
+    if (round.earlyInput && round.earlyInput.kind === "point") {
+      if (!round.earlyInput.keys.includes(target)) round.earlyInput.keys.push(target);
+    } else {
+      round.earlyInput = { kind: "point", keys: [target], t: t };
+    }
   } else if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
     reportSelfMiss("今はハイハイのタイミング！");
   } else if (G.mode === "play") {
@@ -1107,6 +1153,9 @@ function handleHaihaiInput(t) {
   const ev = round.event;
   if (ev.type === "haihai" && ev.actors.includes(0) && !ev.playerDone) {
     resolvePlayerHaihai(t);
+  } else if (inRemoteTurnGap(ev)) {
+    // 同時さしの通知が届く前の早めのハイハイ。保留して届いた時点で判定する
+    round.earlyInput = { kind: "haihai", keys: [], t: t };
   } else if (G.mode === "play") {
     reportSelfMiss("今はハイハイじゃない！");
   }

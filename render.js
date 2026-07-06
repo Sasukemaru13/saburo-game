@@ -576,6 +576,13 @@ function drawHUD(G) {
     ctx.shadowColor = "transparent";
   }
 
+  // リモート人間の入力待ちが長引いた時の表示（無言のフリーズに見せない）
+  if (G.online && G.waitNote && G.mode === "play") {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#9aa3c0";
+    fillTextFit(G.waitNote, 240, 96, 17, 700, 440);
+  }
+
   ctx.font = F(13);
   ctx.fillStyle = "#9aa3c0";
   ctx.textAlign = "left";
