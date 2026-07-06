@@ -73,6 +73,7 @@ const G = {
   newBest: false,
   loseReason: "",
   introText: "",
+  introSub: "",  // イントロ/待機画面の補足行（introTextの下に小さく表示）
   bpmNow: 100,
   now: 0,        // 音声クロック（render側のアニメ進行に使う）
   popups: [],    // +1/+2ポップアップ
@@ -444,6 +445,7 @@ async function startRound() {
         if (G.mode !== "intro" || (round && round.event)) return;
         if (!NET.connected) {
           G.introText = "接続中…";
+          G.introSub = "";
           return;
         }
         const list = players || NET.lastPlayers || [];
@@ -451,9 +453,14 @@ async function startRound() {
         const readyCount = list.filter(function(p) { return p.ready; }).length;
         // 対戦中の部屋に後から入った場合、その試合が終わるまでは始まらない
         // （サーバーは試合の終了を知らないため正確な表示はフェーズ3で対応）
-        G.introText = humanCount >= 2
-          ? "スタート済み " + readyCount + "/" + humanCount + " 人（全員で開始）"
-          : "参加者 " + humanCount + " 人　相手の入室待ち…";
+        // メイン行は短く保ち、補足はintroSub（下の小さい行）に分ける
+        if (humanCount >= 2) {
+          G.introText = "スタート済み " + readyCount + "/" + humanCount + " 人";
+          G.introSub = "全員が押すと開始";
+        } else {
+          G.introText = "参加者 " + humanCount + " 人";
+          G.introSub = "相手の入室待ち…";
+        }
       };
       NET.onRoster(updateWaitingText);
       updateWaitingText(null);
@@ -527,6 +534,7 @@ function armRound(t0Override, firstActorLocal) {
     : (G.online ? toLocal(0) : 0);
   G.starterName = G.chars[firstActor] ? seatDisplayName(firstActor) : "";
   G.onlineWaiting = false; // 待ち合わせ終了
+  G.introSub = "";         // 待機中の補足行を消す（イントロのタンタン表示に混ざらないように）
   // 通し拍番号はリスタートを跨いでも巻き戻さない（人間手番ゲート・ミス重複防止のキー）
   if (round.beatCounter === undefined) round.beatCounter = 0;
   round.beatCounter++;

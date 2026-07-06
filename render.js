@@ -77,6 +77,19 @@ function flinchAmount(G, idx) {
   return f;
 }
 
+// 動的な文字列（名前・人数・ミス理由など）のはみ出し防止の共通ヘルパー。
+// maxWidth に収まるまでフォントサイズを自動で下げてから描く。
+// 可変テキストを描くときは必ずこれを使うこと（直接 fillText しない）
+function fillTextFit(text, x, y, baseSize, weight, maxWidth) {
+  let size = baseSize;
+  ctx.font = F(size, weight);
+  while (size > 10 && ctx.measureText(text).width > maxWidth) {
+    size -= 1;
+    ctx.font = F(size, weight);
+  }
+  ctx.fillText(text, x, y);
+}
+
 function rrect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -612,11 +625,19 @@ function drawTitle(G, now) {
     ctx.shadowBlur = 0;
     ctx.shadowColor = "transparent";
     ctx.fillStyle = "#8ec9ff";
-    ctx.font = F(15, 800);
     const label = NET.connected
       ? "部屋にいる人: " + (NET.lastPlayers ? NET.lastPlayers.length : 1) + "/4"
       : "接続中…";
-    ctx.fillText(label, 240, 40);
+    fillTextFit(label, 240, 40, 15, 800, 170);
+    // 在室者の名前一覧（長い名前は切り詰め＋全体は自動縮小ではみ出さない）
+    if (NET.connected && NET.lastPlayers && NET.lastPlayers.length) {
+      const names = NET.lastPlayers.map(function(p) {
+        const n = p.name || "?";
+        return n.length > 8 ? n.slice(0, 8) + "…" : n;
+      }).join("・");
+      ctx.fillStyle = "#9aa3c0";
+      fillTextFit(names, 240, 72, 14, 700, 440);
+    }
     ctx.textBaseline = "alphabetic";
   }
 
@@ -640,7 +661,8 @@ function drawTitle(G, now) {
   ctx.font = F(82, 800);
   ctx.fillText("三郎", 240, 348);
   ctx.font = F(32, 800);
-  ctx.fillText("ゲーム", 240, 394);
+  // オンライン版はタイトルを「三郎オンライン」にする
+  ctx.fillText(G.online ? "オンライン" : "ゲーム", 240, 394);
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 
@@ -812,15 +834,13 @@ function drawGameOver(G) {
     ctx.font = F(32, 800);
     ctx.fillText("試合終了！", 240, 284);
     ctx.fillStyle = "#fff";
-    ctx.font = F(26, 800);
-    ctx.fillText(G.loseReason, 240, 398);
+    fillTextFit(G.loseReason, 240, 398, 26, 800, 340);
   } else {
     ctx.fillStyle = "#e8554d";
     ctx.font = F(32, 800);
     ctx.fillText("リズムが止まった！", 240, 284);
     ctx.fillStyle = "#c5cce6";
-    ctx.font = F(15);
-    ctx.fillText(G.loseReason, 240, 316);
+    fillTextFit(G.loseReason, 240, 316, 15, 700, 340);
 
     ctx.fillStyle = "#fff";
     ctx.font = F(60, 800);
@@ -877,11 +897,9 @@ function drawInterlude(G) {
   ctx.textBaseline = "alphabetic";
   // ミスの種類（大）＋ 誰が・のこりライフ（小）の2行
   ctx.fillStyle = "#ff8a80";
-  ctx.font = F(27, 800);
-  ctx.fillText(G.missReason || "ミス！", 240, 282);
+  fillTextFit(G.missReason || "ミス！", 240, 282, 27, 800, 440);
   ctx.fillStyle = "#e8c9c9";
-  ctx.font = F(17, 700);
-  ctx.fillText(G.missInfo || "", 240, 318);
+  fillTextFit(G.missInfo || "", 240, 318, 17, 700, 440);
 
   const isMe = G.resumeSeat === 0;
   if (isMe) {
@@ -921,18 +939,19 @@ function drawIntro(G) {
   if (G.online) {
     if (G.missInfo) {
       ctx.fillStyle = "#ff8a80";
-      ctx.font = F(18, 800);
-      ctx.fillText(G.missInfo, 240, 110);
+      fillTextFit(G.missInfo, 240, 110, 18, 800, 440);
     }
     if (G.starterName) {
       ctx.fillStyle = "#8ec9ff";
-      ctx.font = F(22, 800);
-      ctx.fillText(G.starterName + " からスタート！", 240, 140);
+      fillTextFit(G.starterName + " からスタート！", 240, 140, 22, 800, 440);
     }
   }
   ctx.fillStyle = "#ffd95e";
-  ctx.font = F(32, 800);
-  ctx.fillText(G.introText || "", 240, 170);
+  fillTextFit(G.introText || "", 240, 170, 32, 800, 440);
+  if (G.introSub) {
+    ctx.fillStyle = "#c5cce6";
+    fillTextFit(G.introSub, 240, 206, 15, 700, 440);
+  }
   // 待ち合わせ中は戻り方も示す（相手が来ないと抜けられない画面にしない）
   // タップ用ボタンの当たり判定は game.js の handleTapUI と座標を揃えること（170,678,140,44）
   if (G.onlineWaiting) {
