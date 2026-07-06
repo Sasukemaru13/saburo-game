@@ -343,6 +343,8 @@ async function startRound() {
     // start コールバックは1本に統合する（onStartは上書き式なので二重登録禁止）。
     // ホスト自身も broadcastStart 経由でここを通る
     NET.onStart(function(msg) {
+      // 自分がスタート待ち状態のときだけ受け付ける（ゲームオーバー画面等での誤発動防止）
+      if (G.mode !== "intro") return;
       if (msg.players) {
         G.players = msg.players;
         G.humanSeats = msg.players
@@ -363,18 +365,31 @@ async function startRound() {
     NET.onInput(handleRemoteInput);
 
     if (NET.mySeat === 0) {
-      // ホスト: 開始時刻を壁時計（ms）で決めてブロードキャスト（2秒後に始まる）
-      const t0 = Date.now() + 2000;
-      // players 配列を組み立てる（ローカル2タブ版: seat=0とseat=1が人間、残りCPU）
-      const players = [
-        { seat: 0, name: "P1", kind: "human" },
-        { seat: 1, name: "P2", kind: "human" },
-        { seat: 2, name: "二郎", kind: "cpu" },
-        { seat: 3, name: "四郎", kind: "cpu" },
-      ];
-      NET.broadcastStart(t0, NET.cpuSeed, players);
+      // ホスト: ゲスト（絶対席1）がスタートを押している（ready）のを確認してから開始を配る。
+      // 「もう一度」でも同じ経路を通るので、両方が押すまで始まらない
+      const tryStart = function() {
+        if (G.mode !== "intro") return;      // ホスト自身がスタート待ちのときだけ
+        if (!NET.readySeats[1]) return;      // ローカル2タブ版: ゲスト=絶対席1
+        const t0 = Date.now() + 2000;
+        // シードは毎試合ホストが新しく配る（固定だと毎回CPUが同じ動きになる）
+        const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+        const players = [
+          { seat: 0, name: "P1", kind: "human" },
+          { seat: 1, name: "P2", kind: "human" },
+          { seat: 2, name: "二郎", kind: "cpu" },
+          { seat: 3, name: "四郎", kind: "cpu" },
+        ];
+        NET.broadcastStart(t0, seed, players);
+      };
+      NET.onReady(tryStart);
+      tryStart(); // ゲストが先にreadyを送っていた場合は即開始
+    } else {
+      // ゲスト: readyを送って start を待つ
+      NET.sendReady();
     }
-    // ゲスト: start メッセージを待つだけ（コールバック登録済み）
+
+    // 待ち合わせ中の表示（armRoundが呼ばれてintroが進み始めると上書きされる）
+    G.introText = NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…";
   } else {
     // 1人用: 従来どおり音声時計が動き出したら armRound
     if (audioCtx.state === "running") armRound();

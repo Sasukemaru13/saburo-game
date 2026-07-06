@@ -120,6 +120,11 @@ const NET = {
   _transport: null,
   _onStartCb: null,   // start メッセージを受けたときのコールバック(t0を渡す)
   _onInputCb: null,   // 他席のinputを受けたときのコールバック
+  _onReadyCb: null,   // ready メッセージを受けたときのコールバック
+
+  // ready 待ち合わせ: 「もう一度」も含め、ホストは全ゲストのreadyを見てから開始を配る
+  // （startを配った時点でクリアし、次の試合のreadyを待てるようにする）
+  readySeats: {},
 
   // PRNGインスタンス（cpuSeed で初期化）
   _rng: null,
@@ -154,10 +159,26 @@ const NET = {
     return this._rng;
   },
 
+  // ゲストが「スタートを押して待機中」であることをホストへ伝える
+  sendReady: function() {
+    if (!this.online) return;
+    this._transport.send({ type: "ready", seat: this.mySeat });
+  },
+
+  // ready メッセージのコールバックを登録する（cb(seat)）
+  onReady: function(cb) {
+    this._onReadyCb = cb;
+  },
+
   // ホストがゲーム開始時刻を決め、全タブにブロードキャストする。
   // game.js の armRound 相当を呼ぶ直前に実行する。
   broadcastStart: function(t0, cpuSeed, players) {
     if (!this.online || this.mySeat !== 0) return;
+    // ホスト自身のPRNGも配布シードで初期化し直す（ゲストは_handleMessageで初期化される。
+    // ここを忘れると2戦目以降ホストだけ乱数列が続きから進んでCPUの行動が分岐する）
+    this.cpuSeed = cpuSeed;
+    this._rng = makePRNG(cpuSeed);
+    this.readySeats = {}; // 次の試合のready待ちに備えてクリア
     const msg = {
       type: "start",
       t0: t0,
@@ -205,7 +226,12 @@ const NET = {
       this.cpuSeed = msg.cpuSeed;
       // PRNGを正しいシードで（再）初期化
       this._rng = makePRNG(msg.cpuSeed);
+      this.readySeats = {}; // 次の試合のready待ちに備えてクリア
       if (this._onStartCb) this._onStartCb(msg);
+    } else if (msg.type === "ready") {
+      if (msg.seat === this.mySeat) return;
+      this.readySeats[msg.seat] = true;
+      if (this._onReadyCb) this._onReadyCb(msg.seat);
     } else if (msg.type === "input") {
       // 自分自身のエコーは無視
       if (msg.seat === this.mySeat) return;
