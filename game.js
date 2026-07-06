@@ -98,6 +98,7 @@ const G = {
   _readyTimer: null,     // ゲストのready再送タイマー
   rankingList: null,     // 1人用ゲームオーバー時の上位5件（fetch成功時のみ）
   _memberOfMatch: true,  // フェーズ3: start受信時に自分が players に含まれていれば true
+  rankingScreen: null,   // タイトルのランキング画面データ { list, difficulty, state:"loading"|"ok"|"error" }
 };
 
 // ---------- 音声 ----------
@@ -636,10 +637,17 @@ function gameOver(reason) {
       return params.get("name") || localStorage.getItem("saburo_name") || null;
     })();
     if (playerName) {
+      // URLに ?stoken= があればbodyに含める（週間ランキング対象）
+      const stoken = (function() {
+        const params = new URLSearchParams(location.search);
+        return params.get("stoken") || null;
+      })();
+      const body = { name: playerName, difficulty: G.difficulty, score: G.score };
+      if (stoken) body.stoken = stoken;
       fetch(SABURO_SERVER_HTTP + "/saburo/score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: playerName, difficulty: G.difficulty, score: G.score }),
+        body: JSON.stringify(body),
       }).catch(function(e) { console.warn("saburo: score submit failed", e); });
     }
     // ランキング取得（失敗は無視）
@@ -652,6 +660,84 @@ function gameOver(reason) {
       })
       .catch(function() { /* 無視 */ });
   }
+}
+
+// ---------- ベスト記録のサーバー同期 ----------
+// ページ読み込み時（1人用かつ名前あり）に /saburo/mybest を叩き、
+// サーバーとローカルの食い違いを解消する
+function syncBestWithServer() {
+  const params = new URLSearchParams(location.search);
+  // オンラインモードでは動かさない
+  if (params.has("online") || params.has("ws") || params.get("mode") === "local") return;
+  const playerName = params.get("name") || localStorage.getItem("saburo_name") || null;
+  if (!playerName) return;
+
+  fetch(SABURO_SERVER_HTTP + "/saburo/mybest?name=" + encodeURIComponent(playerName))
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (!data) return;
+      // サーバー値とローカル値を難易度ごとに比較して同期する
+      const stoken = params.get("stoken") || null;
+      for (const diff of Object.keys(DIFFICULTIES)) {
+        const serverScore = (typeof data[diff] === "number") ? data[diff] : 0;
+        const localScore = G.bests[diff];
+        if (serverScore > localScore) {
+          // サーバー > ローカル: ローカルをサーバー値に上書き
+          G.bests[diff] = serverScore;
+          localStorage.setItem("saburo_best_" + diff, String(serverScore));
+        } else if (localScore > serverScore && localScore > 0) {
+          // ローカル > サーバー: 過去スコアをサーバーに反映（吸い上げ）
+          const body = { name: playerName, difficulty: diff, score: localScore };
+          if (stoken) body.stoken = stoken;
+          fetch(SABURO_SERVER_HTTP + "/saburo/score", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }).catch(function(e) { console.warn("saburo: best sync upload failed", e); });
+        }
+      }
+    })
+    .catch(function(e) { console.warn("saburo: mybest fetch failed", e); });
+}
+
+// ---------- ランキング画面のfetch ----------
+function fetchRankingScreen(difficulty) {
+  G.rankingScreen = { list: null, difficulty: difficulty, state: "loading" };
+  fetch(SABURO_SERVER_HTTP + "/saburo/ranking?difficulty=" + difficulty)
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(data) {
+      if (G.rankingScreen && G.rankingScreen.difficulty === difficulty) {
+        if (data && (Array.isArray(data) || (data.ranking && Array.isArray(data.ranking)))) {
+          const list = Array.isArray(data) ? data : data.ranking;
+          G.rankingScreen.list = list.slice(0, 10);
+          G.rankingScreen.state = "ok";
+        } else {
+          G.rankingScreen.state = "error";
+        }
+      }
+    })
+    .catch(function() {
+      if (G.rankingScreen && G.rankingScreen.difficulty === difficulty) {
+        G.rankingScreen.state = "error";
+      }
+    });
+}
+
+// ランキング画面を開く（タイトルの難易度に合わせてfetch）
+let rankingOpenedAt = 0;
+
+function openRanking() {
+  G.mode = "ranking";
+  rankingOpenedAt = performance.now();
+  playUiPop(660);
+  fetchRankingScreen(G.difficulty);
+}
+
+function closeRanking() {
+  if (performance.now() - rankingOpenedAt < 250) return;
+  G.mode = "title";
+  G.rankingScreen = null;
+  playUiPop(540);
 }
 
 // 表示用の席名。自席は「◯◯（あなた）」だと長いので、文中では「あなた」に短縮する
@@ -1279,10 +1365,33 @@ window.addEventListener("keydown", (e) => {
     if (key === "2") { G.difficulty = "normal"; playUiSelect("normal"); return; }
     if (key === "3") { G.difficulty = "hard"; playUiSelect("hard"); return; }
     if (key === "h") { openHowto(); return; }
+    // ランキング（1人用のみ）
+    if (key === "r" && !G.online) { openRanking(); return; }
     if (key === " ") {
       e.preventDefault();
       startRound();
     }
+    return;
+  }
+
+  if (G.mode === "ranking") {
+    // ランキング画面: 1/2/3 で難易度切替、それ以外で閉じる
+    if (key === "1") {
+      G.difficulty = "easy";
+      fetchRankingScreen("easy");
+      return;
+    }
+    if (key === "2") {
+      G.difficulty = "normal";
+      fetchRankingScreen("normal");
+      return;
+    }
+    if (key === "3") {
+      G.difficulty = "hard";
+      fetchRankingScreen("hard");
+      return;
+    }
+    closeRanking();
     return;
   }
 
@@ -1406,12 +1515,25 @@ function handleTapUI(pos) {
     const card = hitDifficulty(pos);
     const s = TITLE_UI.start;
     const h = TITLE_UI.howto;
+    const rk = TITLE_UI.ranking;
     if (card) {
       G.difficulty = card;
       playUiSelect(card);
     }
     else if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
     else if (inRect(pos, h.x, h.y, h.w, h.h)) openHowto();
+    else if (rk && !G.online && inRect(pos, rk.x, rk.y, rk.w, rk.h)) openRanking();
+    return true;
+  }
+  if (G.mode === "ranking") {
+    // 難易度ピルのタップで切り替え
+    const card = hitDifficulty(pos);
+    if (card) {
+      G.difficulty = card;
+      fetchRankingScreen(card);
+      return true;
+    }
+    closeRanking();
     return true;
   }
   if (G.mode === "howto") {
@@ -1486,5 +1608,8 @@ window.addEventListener("pagehide", () => {
 // net.js が先に読み込まれている必要がある（index.html の script 順で保証）
 NET.init();
 G.online = NET.online;
+
+// 1人用かつ名前あり: ベスト記録をサーバーと同期する（非同期・失敗は無視）
+syncBestWithServer();
 
 requestAnimationFrame(loop);

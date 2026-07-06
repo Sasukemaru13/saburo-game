@@ -614,6 +614,8 @@ const TITLE_UI = {
   ],
   start: { x: 110, y: 584, w: 260, h: 62 },
   howto: { x: 150, y: 682, w: 180, h: 40 },
+  // ランキングボタン（1人用のみ描画・当たり判定）
+  ranking: { x: 150, y: 732, w: 180, h: 36 },
 };
 
 function drawTitle(G, now) {
@@ -743,6 +745,17 @@ function drawTitle(G, now) {
   ctx.font = F(16, 800);
   ctx.fillText(IS_TOUCH ? "？ あそびかた" : "？ あそびかた (H)", h.x + h.w / 2, h.y + 26);
 
+  // ランキングボタン（1人用のみ）
+  if (!G.online) {
+    const rk = TITLE_UI.ranking;
+    ctx.fillStyle = "rgba(57, 64, 92, 0.6)";
+    rrect(rk.x, rk.y, rk.w, rk.h, rk.h / 2);
+    ctx.fill();
+    ctx.fillStyle = "#ffd95e";
+    ctx.font = F(15, 800);
+    ctx.fillText(IS_TOUCH ? "★ ランキング" : "★ ランキング (R)", rk.x + rk.w / 2, rk.y + 24);
+  }
+
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(154, 163, 192, 0.5)";
   ctx.font = F(11);
@@ -826,6 +839,113 @@ function drawHowto(G, now) {
   ctx.fillStyle = `rgba(255,255,255,${0.55 + 0.45 * Math.sin(now * 3)})`;
   ctx.font = F(16, 800);
   ctx.fillText(IS_TOUCH ? "タップでもどる" : "好きなキーでもどる", 240, 684);
+}
+
+// ランキング画面（1人用のタイトルから開く）
+function drawRanking(G, now) {
+  drawStage(now);
+  drawVignette();
+
+  ctx.fillStyle = "rgba(15, 13, 22, 0.72)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 30;
+  rrect(36, 60, 408, 680, 20);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+
+  // タイトル
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd95e";
+  ctx.font = F(26, 800);
+  ctx.fillText("グローバルランキング", 240, 106);
+
+  // 難易度ピル（再fetchできる）
+  const keys = Object.keys(DIFFICULTIES);
+  const pilW = 110;
+  const pilH = 36;
+  const pilY = 122;
+  const totalW = keys.length * pilW + (keys.length - 1) * 10;
+  const pilStartX = (W - totalW) / 2;
+  keys.forEach(function(k, i) {
+    const d = DIFFICULTIES[k];
+    const px = pilStartX + i * (pilW + 10);
+    const sel = G.rankingScreen && G.rankingScreen.difficulty === k;
+    ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
+    rrect(px, pilY, pilW, pilH, pilH / 2);
+    ctx.fill();
+    ctx.fillStyle = sel ? "#222" : "#e8e4f5";
+    ctx.font = F(14, 800);
+    ctx.fillText(IS_TOUCH ? d.label : (i + 1) + " " + d.label, px + pilW / 2, pilY + 24);
+  });
+
+  // ランキング本体
+  const rs = G.rankingScreen;
+  const listY = 178;
+  if (!rs || rs.state === "loading") {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = F(16);
+    ctx.fillText("読み込み中…", 240, listY + 40);
+  } else if (rs.state === "error") {
+    ctx.fillStyle = "#ff8a80";
+    ctx.font = F(16);
+    ctx.fillText("取得できませんでした", 240, listY + 40);
+  } else if (!rs.list || rs.list.length === 0) {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = F(16);
+    ctx.fillText("まだ記録がありません", 240, listY + 40);
+  } else {
+    // 自分の名前（ハイライト用）
+    const params = new URLSearchParams(location.search);
+    const myName = params.get("name") || localStorage.getItem("saburo_name") || null;
+
+    for (let i = 0; i < rs.list.length; i++) {
+      const entry = rs.list[i];
+      const ey = listY + i * 46;
+      const isMe = myName && entry.name === myName;
+
+      // 行背景
+      ctx.fillStyle = isMe ? "rgba(255, 217, 94, 0.14)" : "rgba(255,255,255,0.04)";
+      rrect(56, ey, 368, 38, 8);
+      ctx.fill();
+
+      // 順位
+      ctx.fillStyle = i === 0 ? "#ffd95e" : i === 1 ? "#c8d8e8" : i === 2 ? "#c88840" : "#6a7090";
+      ctx.font = F(16, 800);
+      ctx.textAlign = "right";
+      ctx.fillText((i + 1) + ".", 90, ey + 25);
+
+      // 名前
+      ctx.fillStyle = isMe ? "#ffd95e" : "#e8e4f5";
+      ctx.font = F(15, isMe ? 800 : 700);
+      ctx.textAlign = "left";
+      const nameStr = (entry.name || "？").slice(0, 12);
+      ctx.fillText(nameStr, 100, ey + 25);
+
+      // スコア
+      ctx.fillStyle = isMe ? "#ffd95e" : "#ffffff";
+      ctx.font = F(18, 800);
+      ctx.textAlign = "right";
+      ctx.fillText(entry.score + " 点", 388, ey + 25);
+
+      // 日付（小さく）
+      if (entry.date) {
+        const dateStr = String(entry.date).slice(0, 10);
+        ctx.fillStyle = "#6a7090";
+        ctx.font = F(11, 700);
+        ctx.fillText(dateStr, 424, ey + 25);
+      }
+    }
+  }
+
+  // 閉じ方ガイド
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,255,255," + (0.5 + 0.45 * Math.sin(now * 3)) + ")";
+  ctx.font = F(15, 800);
+  ctx.fillText(IS_TOUCH ? "タップでもどる" : "好きなキーでもどる", 240, 712);
 }
 
 function drawGameOver(G) {
@@ -1108,6 +1228,10 @@ function render(G, now) {
   }
   if (G.mode === "howto") {
     drawHowto(G, now);
+    return;
+  }
+  if (G.mode === "ranking") {
+    drawRanking(G, now);
     return;
   }
 
