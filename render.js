@@ -855,9 +855,13 @@ function drawInterlude(G) {
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
+  // ミスの種類（大）＋ 誰が・のこりライフ（小）の2行
   ctx.fillStyle = "#ff8a80";
-  ctx.font = F(24, 800);
-  ctx.fillText(G.missInfo || "ミス！", 240, 300);
+  ctx.font = F(27, 800);
+  ctx.fillText(G.missReason || "ミス！", 240, 282);
+  ctx.fillStyle = "#e8c9c9";
+  ctx.font = F(17, 700);
+  ctx.fillText(G.missInfo || "", 240, 318);
 
   const isMe = G.resumeSeat === 0;
   if (isMe) {

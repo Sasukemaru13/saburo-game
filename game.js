@@ -88,7 +88,8 @@ const G = {
   // ライフ制（ローカル席index）。ミスで-1、0で死亡=CPU代走。人間が1人になったら試合終了
   lives: [3, 3, 3, 3],
   starterName: "",       // このラウンドの開始者名（イントロで表示）
-  missInfo: "",          // 直前のミス内容（リスタートのイントロで表示）
+  missInfo: "",          // 直前のミス（誰が・のこりライフ）
+  missReason: "",        // 直前のミスの種類（「早すぎた！」等・一時停止画面に大きく表示）
   _lastMissKey: null,    // ミスの重複処理防止（beat:seat）
   resumeSeat: null,      // interlude中、再開ボタンを押す担当（ローカル席。ミスした人）
   onlineWaiting: false,  // 開始前の待ち合わせ中か（待機画面のヒント表示用）
@@ -336,6 +337,7 @@ async function startRound() {
   G._inputGate = null;
   G.lives = [3, 3, 3, 3];
   G.missInfo = "";
+  G.missReason = "";
   G.starterName = "";
   G._lastMissKey = null;
 
@@ -597,7 +599,7 @@ function reportSelfMiss(reason) {
   if (G.chars[0] && G.chars[0].kind === "cpu") return;
   const ev = round && round.event;
   const beat = ev ? ev.beat : -1;
-  NET.sendInput(beat, "miss", [], "miss");
+  NET.sendInput(beat, "miss", [], "miss", reason); // 理由も送る（相手画面のミス表示用）
   handleMiss(0, reason, beat);
 }
 
@@ -612,6 +614,8 @@ function handleMiss(seat, reason, beat) {
   playBuzzer();
   G.lives[seat] = Math.max(0, (G.lives[seat] || 0) - 1);
   const name = seatDisplayName(seat);
+  // どのミスだったか（「早すぎた！」等）を一時停止画面に大きく出す
+  G.missReason = reason || "リズムを外した！";
 
   if (G.lives[seat] <= 0) {
     // 死亡: 以降この席はCPUが代走する（死亡時のクドス支払いはフェーズ4=ゼウスくん側）
@@ -846,13 +850,13 @@ function resolvePlayerHaihai(t) {
 
 // ---------- オンライン: リモート人間の入力を受けたときの処理 ----------
 // net.js の NET.onInput コールバックから呼ばれる
-function handleRemoteInput(beat, localSeat, action, localTargets, result) {
+function handleRemoteInput(beat, localSeat, action, localTargets, result, reason) {
   if (G.mode === "gameover") return;
   if (!round || !round.event) return;
 
   // リモートのミス: ライフ制の共通処理へ（重複はhandleMiss側でbeat:seatキーで弾く）
   if (result === "miss") {
-    handleMiss(localSeat, seatDisplayName(localSeat) + " がリズムを外した！", beat);
+    handleMiss(localSeat, reason, beat);
     return;
   }
 

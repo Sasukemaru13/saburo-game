@@ -368,8 +368,9 @@ const NET = {
   },
 
   // 自分の入力を送る（targets はローカル席配列→絶対席に変換して送信）
-  sendInput: function(beat, action, targets, result) {
-    if (!this.online) return;
+  // reason: ミス時の理由文（「早すぎた！」等）。他画面のミス表示に使う
+  sendInput: function(beat, action, targets, result, reason) {
+    if (!this.online || !this._transport) return;
     const absTargets = targets.map(toAbs);
     const msg = {
       type: "input",
@@ -378,6 +379,7 @@ const NET = {
       targets: absTargets,
       result: result,
     };
+    if (reason) msg.reason = reason;
     if (!this.wsMode) msg.seat = this.mySeat;
     this._transport.send(msg);
   },
@@ -478,7 +480,7 @@ const NET = {
       if (this._onInputCb) {
         const localSeat = toLocal(msg.seat);
         const localTargets = (msg.targets || []).map(toLocal);
-        this._onInputCb(msg.beat, localSeat, msg.action, localTargets, msg.result);
+        this._onInputCb(msg.beat, localSeat, msg.action, localTargets, msg.result, msg.reason);
       }
     }
   },
