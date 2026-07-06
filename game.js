@@ -681,20 +681,12 @@ function syncBestWithServer() {
         const serverScore = (typeof data[diff] === "number") ? data[diff] : 0;
         const localScore = G.bests[diff];
         if (serverScore > localScore) {
-          // サーバー > ローカル: ローカルをサーバー値に上書き
+          // サーバー > ローカル: ローカルをサーバー値に上書き。
+          // 同期はこの一方向（サーバー→端末）だけ。逆方向の「吸い上げ」は廃止した——
+          // 端末に残った古い記録が勝手にランキングへ復活し続けるため（66点事件 2026-07-07）。
+          // サーバーのランキングに載るのは実際にプレイした時のスコアだけ
           G.bests[diff] = serverScore;
           localStorage.setItem("saburo_best_" + diff, String(serverScore));
-        } else if (localScore > serverScore && localScore > 0) {
-          // ローカル > サーバー: 過去スコアをサーバーに反映（吸い上げ）。
-          // 注意: ここには stoken を付けない。付けると「昔のスコア」が
-          // 今週の週間ランキング（賞金対象）に算入されて不公平になる。
-          // 週間対象は実際にその週に遊んだスコア（gameOverのPOST）だけ
-          const body = { name: playerName, difficulty: diff, score: localScore };
-          fetch(SABURO_SERVER_HTTP + "/saburo/score", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          }).catch(function(e) { console.warn("saburo: best sync upload failed", e); });
         }
       }
     })
