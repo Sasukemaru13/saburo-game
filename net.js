@@ -238,10 +238,14 @@ const NET = {
   // ---------- WSモードの接続初期化 ----------
   _initWs: function(p) {
     const params = new URLSearchParams(location.search);
-    // room と name を QueryString でサーバーへ
+    // room と name を QueryString でサーバーへ。
+    // token はフェーズ4（クドス賭け部屋）でDiscordアカウントと席を紐づけるためのもの。
+    // ゼウスくんの参加ボタンが発行するURLに含まれていて、そのままサーバーへ渡す
     const room = params.get("room") || "saburo";
     const name = encodeURIComponent(this._playerName || "ゲスト");
-    const url = SABURO_SERVER + "/saburo/ws?room=" + encodeURIComponent(room) + "&name=" + name;
+    let url = SABURO_SERVER + "/saburo/ws?room=" + encodeURIComponent(room) + "&name=" + name;
+    const token = params.get("token");
+    if (token) url += "&token=" + encodeURIComponent(token);
 
     this.connected = false;
     this.clockReady = false;
