@@ -32,7 +32,7 @@ function makeChars(onlinePlayers) {
     if (player) {
       chars.push({
         name: player.kind === "human"
-          ? (local === 0 ? "あなた" : "P" + (abs + 1))
+          ? (local === 0 ? (player.name ? player.name + "（あなた）" : "あなた") : (player.name || "P" + (abs + 1)))
           : CPU_NAMES[abs],
         color: COLORS[abs],
         pitch: PITCHES[abs],
@@ -91,6 +91,7 @@ const G = {
   resumeSeat: null,      // interlude中、再開ボタンを押す担当（ローカル席。ミスした人）
   onlineWaiting: false,  // 開始前の待ち合わせ中か（待機画面のヒント表示用）
   _readyTimer: null,     // ゲストのready再送タイマー
+  rankingList: null,     // 1人用ゲームオーバー時の上位5件（fetch成功時のみ）
 };
 
 // ---------- 音声 ----------
@@ -373,9 +374,12 @@ async function startRound() {
         G.chars = makeChars(G.players);
       }
       if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
-      // msg.t0 は壁時計（Date.now()・ms）。audioCtx.currentTime はタブごとに独立した
-      // 時計なのでそのまま使えない。受信時点の差分でローカル音声時計に変換する
-      const t0Local = audioCtx.currentTime + (msg.t0 - Date.now()) / 1000;
+      // msg.t0 はサーバー時刻（ms）。audioCtx.currentTime はタブごとに独立した時計なので
+      // サーバー時刻基準でローカル音声時計に変換する。
+      // localモードでは NET.serverNowMs() ≒ performance.now() ≒ Date.now() - epoch差 なので
+      // 差分が同符号になり実質的に従来の Date.now() と同じ精度で動く。
+      const _nowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
+      const t0Local = audioCtx.currentTime + (msg.t0 - _nowMs) / 1000;
       if (t0Local < audioCtx.currentTime + 0.2) {
         console.warn("saburo: start時刻が過去/直近すぎる (受信遅れ?)", msg.t0, t0Local);
       }
@@ -387,61 +391,74 @@ async function startRound() {
     NET.onLeave(function(seat) {
       // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
       if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
-        const local = toLocal(seat);
-        const name = (G.chars[local] && G.chars[local].name) || "相手";
-        gameOver(name + " が退出しました");
+        if (seat === -1) {
+          gameOver("サーバーとの接続が切れました");
+        } else if (seat === -2) {
+          gameOver("部屋が満員です");
+        } else {
+          const local = toLocal(seat);
+          const name = (G.chars[local] && G.chars[local].name) || "相手";
+          gameOver(name + " が退出しました");
+        }
       }
     });
 
-    // 相手がすでに退出している状態で「もう一度」を押した場合は待たずに知らせる
-    // （ローカル2タブ版: 相手=絶対席 0か1 のもう一方）
-    const otherSeat = NET.mySeat === 0 ? 1 : 0;
-    if (NET.departedSeats[otherSeat]) {
-      gameOver("相手が退出しました（対戦するにはもう一度URLを開いてもらってね）");
-      return;
-    }
-
-    if (NET.mySeat === 0) {
-      // ホスト: ゲスト（絶対席1）がスタートを押している（ready）のを確認してから開始を配る。
-      // 「もう一度」でも同じ経路を通るので、両方が押すまで始まらない
-      const tryStart = function() {
-        if (G.mode !== "intro") return;      // ホスト自身がスタート待ちのときだけ
-        // ローカル2タブ版: ゲスト=絶対席1。3秒以内の新鮮なreadyだけ信用する
-        // （古いreadyでいない相手に向かって開始する事故の防止。ゲストは待機中1秒ごとに再送する）
-        const ts = NET.readySeats[1];
-        if (!ts || Date.now() - ts > 3000) return;
-        const t0 = Date.now() + 2000;
-        // シードは毎試合ホストが新しく配る（固定だと毎回CPUが同じ動きになる）
-        const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
-        const players = [
-          { seat: 0, name: "P1", kind: "human" },
-          { seat: 1, name: "P2", kind: "human" },
-          { seat: 2, name: "二郎", kind: "cpu" },
-          { seat: 3, name: "四郎", kind: "cpu" },
-        ];
-        NET.broadcastStart(t0, seed, players);
-      };
-      NET.onReady(tryStart);
-      tryStart(); // ゲストが先にreadyを送っていた場合は即開始
+    if (NET.wsMode) {
+      // WSモード: 全員が ready を送ってサーバーの start を待つ（席0もそれ以外も同じ）
+      NET.sendReady(G.difficulty);
+      // 待機画面の人数情報を roster コールバックで更新する
+      NET.onRoster(function(players) {
+        if (G.mode !== "intro" || (round && round.event)) return;
+        const humanCount = players.filter(function(p) { return p.kind === "human"; }).length;
+        G.introText = "参加者 " + humanCount + " 人　スタート待ち…";
+      });
     } else {
-      // ゲスト: readyを送って start を待つ。
-      // 待機中は1秒ごとに再送する（自分より後にホストのタブが開かれた場合、
-      // 最初の1発はどこにも届かず両者が永遠に待つため）
-      NET.sendReady();
-      if (G._readyTimer) clearInterval(G._readyTimer);
-      G._readyTimer = setInterval(function() {
-        const waiting = G.online && G.mode === "intro" && round && !round.event;
-        if (waiting) {
-          NET.sendReady();
-        } else {
-          clearInterval(G._readyTimer);
-          G._readyTimer = null;
-        }
-      }, 1000);
+      // localモード: 従来どおりホスト主導で start を配る
+      // 相手がすでに退出している状態で「もう一度」を押した場合は待たずに知らせる
+      const otherSeat = NET.mySeat === 0 ? 1 : 0;
+      if (NET.departedSeats[otherSeat]) {
+        gameOver("相手が退出しました（対戦するにはもう一度URLを開いてもらってね）");
+        return;
+      }
+
+      if (NET.mySeat === 0) {
+        // ホスト: ゲスト（絶対席1）がスタートを押している（ready）のを確認してから開始を配る
+        const tryStart = function() {
+          if (G.mode !== "intro") return;
+          const ts = NET.readySeats[1];
+          if (!ts || Date.now() - ts > 3000) return;
+          const t0 = Date.now() + 2000;
+          const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
+          const players = [
+            { seat: 0, name: "P1", kind: "human" },
+            { seat: 1, name: "P2", kind: "human" },
+            { seat: 2, name: "二郎", kind: "cpu" },
+            { seat: 3, name: "四郎", kind: "cpu" },
+          ];
+          NET.broadcastStart(t0, seed, players);
+        };
+        NET.onReady(tryStart);
+        tryStart();
+      } else {
+        // ゲスト: readyを送って start を待つ。1秒ごとに再送
+        NET.sendReady(G.difficulty);
+        if (G._readyTimer) clearInterval(G._readyTimer);
+        G._readyTimer = setInterval(function() {
+          const waiting = G.online && G.mode === "intro" && round && !round.event;
+          if (waiting) {
+            NET.sendReady(G.difficulty);
+          } else {
+            clearInterval(G._readyTimer);
+            G._readyTimer = null;
+          }
+        }, 1000);
+      }
     }
 
     // 待ち合わせ中の表示（armRoundが呼ばれてintroが進み始めると上書きされる）
-    G.introText = NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…";
+    G.introText = NET.wsMode
+      ? "接続中…"
+      : (NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…");
     G.onlineWaiting = true;
   } else {
     // 1人用: 従来どおり音声時計が動き出したら armRound
@@ -486,6 +503,7 @@ function gameOver(reason) {
   G.mode = "gameover";
   G.loseReason = reason;
   G.turnActor = null;
+  G.rankingList = null; // 前回のランキングをリセット
   // オンライン対戦のスコアはルールが別物なので1人用のベスト記録を汚さない
   if (!G.online && G.score > G.bests[G.difficulty]) {
     G.bests[G.difficulty] = G.score;
@@ -493,6 +511,30 @@ function gameOver(reason) {
     localStorage.setItem("saburo_best_" + G.difficulty, String(G.score));
   }
   playBuzzer();
+
+  // 1人用: スコア送信とランキング取得（スコア>0かつ名前あり）
+  if (!G.online && G.score > 0) {
+    const playerName = (function() {
+      const params = new URLSearchParams(location.search);
+      return params.get("name") || localStorage.getItem("saburo_name") || null;
+    })();
+    if (playerName) {
+      fetch(SABURO_SERVER_HTTP + "/saburo/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: playerName, difficulty: G.difficulty, score: G.score }),
+      }).catch(function(e) { console.warn("saburo: score submit failed", e); });
+    }
+    // ランキング取得（失敗は無視）
+    fetch(SABURO_SERVER_HTTP + "/saburo/ranking?difficulty=" + G.difficulty)
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (data && Array.isArray(data)) {
+          G.rankingList = data.slice(0, 5);
+        }
+      })
+      .catch(function() { /* 無視 */ });
+  }
 }
 
 // ---------- オンライン: ミス処理（ライフ制） ----------
@@ -565,7 +607,8 @@ function handleResume(t0Wall, actorAbs) {
   round.pendingKeys = null;
   G.resumeSeat = null;
   G.mode = "intro";
-  const t0Local = audioCtx.currentTime + (t0Wall - Date.now()) / 1000;
+  const _resumeNowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
+  const t0Local = audioCtx.currentTime + (t0Wall - _resumeNowMs) / 1000;
   armRound(t0Local, toLocal(actorAbs));
 }
 
@@ -1197,7 +1240,7 @@ window.addEventListener("pagehide", () => {
   if (G.online) NET.sendLeave();
 });
 
-// NET を初期化する（?online=1 があるときだけ有効になる）
+// NET を初期化する（?online=1 / ?ws= / ?mode=local のときだけ有効になる）
 // net.js が先に読み込まれている必要がある（index.html の script 順で保証）
 NET.init();
 G.online = NET.online;

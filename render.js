@@ -828,6 +828,24 @@ function drawGameOver(G) {
   ctx.fillStyle = "#9aa3c0";
   ctx.font = F(15);
   ctx.fillText(IS_TOUCH ? "タイトルへ" : "タイトルへ (T)", 240, 546);
+
+  // 1人用: みんなのベスト（ランキング上位5件。fetch完了後に表示）
+  if (!G.online && G.rankingList && G.rankingList.length > 0) {
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    rrect(60, 558, 360, 14 + G.rankingList.length * 20 + 10, 8);
+    ctx.fill();
+    ctx.font = F(12, 800);
+    ctx.fillStyle = "#ffd95e";
+    ctx.textAlign = "center";
+    ctx.fillText("みんなのベスト（" + G.difficulty + "）", 240, 576);
+    ctx.font = F(12);
+    ctx.fillStyle = "#c5cce6";
+    for (let ri = 0; ri < G.rankingList.length; ri++) {
+      const entry = G.rankingList[ri];
+      const label = (ri + 1) + ". " + (entry.name || "？") + " — " + entry.score + " 点";
+      ctx.fillText(label, 240, 594 + ri * 20);
+    }
+  }
 }
 
 // オンライン: ミス後の一時停止画面。ミスした本人だけが再開ボタンを押せる

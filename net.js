@@ -1,6 +1,6 @@
 // net.js — オンライン対戦の通信・座席変換・決定論PRNG
-// フェーズ0+1: BroadcastChannel によるローカル2タブ擬似対戦
-// フェーズ2以降: WsTransport に差し替えるだけで実対戦に移行できる
+// フェーズ0+1: BroadcastChannel によるローカル2タブ擬似対戦 (?mode=local)
+// フェーズ2: WebSocket によるサーバー経由の別マシン対戦 (?online=1 または ?ws=...)
 
 // ---------- シード付きPRNG（mulberry32） ----------
 // 同一シードで全クライアントが同じ乱数列を引くことが保証される。
@@ -17,10 +17,26 @@ function makePRNG(seed) {
   };
 }
 
+// ---------- WebSocketサーバーURL定数 ----------
+// ?ws=<url> で上書き可能。省略時はホストで自動切替（localhost→ws / それ以外→wss）
+
+const SABURO_SERVER = (function() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("ws")) return params.get("ws");
+  return location.hostname === "localhost"
+    ? "ws://localhost:8080"
+    : "wss://zeus-kun.fly.dev";
+})();
+
+// ws: → http:, wss: → https: へ変換したHTTP基底URL（スコア送信に使う）
+const SABURO_SERVER_HTTP = SABURO_SERVER.replace(/^ws(s)?:/, function(_, s) {
+  return s ? "https:" : "http:";
+});
+
 // ---------- Transport 抽象 ----------
 // send(msg: object) / onMessage(cb: function(msg: object)) の2メソッドを持つ。
 // フェーズ1: LocalTransport（BroadcastChannel）
-// フェーズ2以降: WsTransport（WebSocket）をここに足す
+// フェーズ2: WsTransport（WebSocket）
 
 function LocalTransport(roomId) {
   const channelName = "saburo-room-" + roomId;
@@ -38,6 +54,53 @@ function LocalTransport(roomId) {
     },
     close: function() {
       bc.close();
+    },
+  };
+}
+
+// ---------- WsTransport（フェーズ2） ----------
+// LocalTransport と同じ send/onMessage/close インターフェース。
+// 接続断を検知したら onClose コールバックを呼ぶ。
+
+function WsTransport(url) {
+  const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  let _cb = null;
+  let _closeCb = null;
+
+  ws.onmessage = function(e) {
+    if (!_cb) return;
+    try {
+      const msg = JSON.parse(e.data);
+      _cb(msg);
+    } catch (err) {
+      console.warn("saburo: WsTransport JSON parse error", err, e.data);
+    }
+  };
+
+  ws.onclose = function() {
+    if (_closeCb) _closeCb();
+  };
+
+  ws.onerror = function(e) {
+    console.warn("saburo: WebSocket error", e);
+  };
+
+  return {
+    ws: ws,
+    send: function(msg) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      }
+    },
+    onMessage: function(cb) {
+      _cb = cb;
+    },
+    onClose: function(cb) {
+      _closeCb = cb;
+    },
+    close: function() {
+      ws.close();
     },
   };
 }
@@ -63,32 +126,38 @@ function toAbs(local) {
 }
 
 // ---------- サーバー時計の抽象 ----------
-// フェーズ1ではローカル時計をそのまま返す（同一マシンなので同一時計）。
-// フェーズ2以降はNTP風ping/pongで推定したオフセットを使う。
+// フェーズ1(localモード): Date.now() をそのまま返す（同一マシンなので同一時計）。
+// フェーズ2(WSモード): NTP風ping/pongで推定したオフセット（ms）を Date.now() に加算する。
+//
+// NET.serverNowMs() は「サーバー時刻のミリ秒推定値」を返す。
+// game.js 側での変換式: t0Local = audioCtx.currentTime + (msg.t0 - NET.serverNowMs()) / 1000
 
-let _serverOffset = 0; // serverTime - audioCtxTime の推定値
+let _clockOffsetMs = 0;     // serverTime(ms) - performance.now() の推定値
+let _minRtt = Infinity;     // 採用した最小RTT（再サンプルで小さい値が出たら更新）
+let _resyncTimer = null;    // 定期再同期タイマー
 
-function serverNow() {
-  // フェーズ2以降: return audioCtx.currentTime + _serverOffset;
-  return typeof audioCtx !== "undefined" && audioCtx
-    ? audioCtx.currentTime
-    : performance.now() / 1000;
-}
-
-function setServerOffset(offset) {
-  _serverOffset = offset;
+// ローカルモード互換: Date.now() ≒ performance.now() + 時計起点差
+// WSモードでは _clockOffsetMs の精度が重要
+function serverNowMs() {
+  return performance.now() + _clockOffsetMs;
 }
 
 // ---------- URLパラメータのパース ----------
 
 function parseOnlineParams() {
   const params = new URLSearchParams(location.search);
+  // mode=local → フェーズ1のBroadcastChannelモード（完全後方互換）
+  // online=1 / ws=<url> → フェーズ2のWSモード
+  const isLocal = params.get("mode") === "local";
+  const isOnline = params.has("online") || params.has("ws");
   return {
-    online: params.has("online"),
+    online: isLocal || isOnline, // どちらも「オンラインモード」として扱う
+    wsMode: isOnline && !isLocal, // true = WSサーバー経由
     room: params.get("room") || "default",
-    seat: parseInt(params.get("seat") || "0", 10),
-    seed: parseInt(params.get("seed") || "0", 10),
+    seat: parseInt(params.get("seat") || "0", 10), // localモード専用
+    seed: parseInt(params.get("seed") || "0", 10), // localモード専用
     t0: parseFloat(params.get("t0") || "0"),
+    name: params.get("name") || localStorage.getItem("saburo_name") || null,
   };
 }
 
@@ -108,33 +177,32 @@ function parseOnlineParams() {
 
 const NET = {
   online: false,
-  ready: false,
+  wsMode: false,      // true = WSサーバー経由（フェーズ2）
+  connected: false,   // WSモードで joined を受けた後に true
 
   // オンラインパラメータ
   room: "default",
   mySeat: 0,
   cpuSeed: 0,
-  t0Server: 0,        // ホストが決めた開始時刻（壁時計 Date.now() 基準・ms。audioCtxはタブごとに独立時計なので不可）
+  t0Server: 0,
 
   // 送受信コールバック
   _transport: null,
-  _onStartCb: null,   // start メッセージを受けたときのコールバック(t0を渡す)
-  _onInputCb: null,   // 他席のinputを受けたときのコールバック
-  _onReadyCb: null,   // ready メッセージを受けたときのコールバック
-  _onResumeCb: null,  // resume メッセージを受けたときのコールバック
-  _onLeaveCb: null,   // leave メッセージを受けたときのコールバック
+  _onStartCb: null,
+  _onInputCb: null,
+  _onReadyCb: null,
+  _onResumeCb: null,
+  _onLeaveCb: null,
+  _onRosterCb: null,  // roster/joined 受信時（待機画面の人数表示用）
 
-  // ready 待ち合わせ: 「もう一度」も含め、ホストは全ゲストのreadyを見てから開始を配る
-  // （startを配った時点でクリアし、次の試合のreadyを待てるようにする）
+  // ready 待ち合わせ（localモード専用）
   readySeats: {},
-
-  // 退出した席（タイトルへ戻った・タブを閉じた）。readyが来たら復帰扱いで解除
   departedSeats: {},
 
   // PRNGインスタンス（cpuSeed で初期化）
   _rng: null,
 
-  // 初期化。game.js の起動時に呼ぶ
+  // ---------- 初期化。game.js の起動時に呼ぶ ----------
   init: function() {
     const p = parseOnlineParams();
     if (!p.online) {
@@ -143,20 +211,89 @@ const NET = {
     }
 
     this.online = true;
+    this.wsMode = p.wsMode;
     this.room = p.room;
-    this.mySeat = p.seat;
-    this.cpuSeed = p.seed;
-    setSeat(p.seat);
+    this._playerName = p.name;
 
-    this._transport = LocalTransport(p.room);
-    this._transport.onMessage(this._handleMessage.bind(this));
-
-    // seat=0 がホスト: audioCtx 起動後に start をブロードキャスト（game.js 側で呼ぶ）
-    // seat != 0 は start メッセージ待ち
+    if (p.wsMode) {
+      // WSモード: サーバーに接続して joined を待つ
+      this._initWs(p);
+    } else {
+      // localモード（BroadcastChannel）: 従来と完全同一の動作
+      this.mySeat = p.seat;
+      this.cpuSeed = p.seed;
+      setSeat(p.seat);
+      this._transport = LocalTransport(p.room);
+      this._transport.onMessage(this._handleMessage.bind(this));
+    }
   },
 
-  // seededRandom を返す（cpuSeed で初期化済み）。
-  // prepareCpu / cpuChooseTargets で呼ぶ。呼び出し順 = 拍の進行と1対1対応している必要がある。
+  // ---------- WSモードの接続初期化 ----------
+  _initWs: function(p) {
+    const params = new URLSearchParams(location.search);
+    // room と name を QueryString でサーバーへ
+    const room = params.get("room") || "saburo";
+    const name = encodeURIComponent(this._playerName || "ゲスト");
+    const url = SABURO_SERVER + "/saburo/ws?room=" + encodeURIComponent(room) + "&name=" + name;
+
+    this._transport = WsTransport(url);
+    this._transport.onMessage(this._handleMessage.bind(this));
+    this._transport.onClose(function() {
+      if (NET._onLeaveCb) {
+        // 接続断をゲームへ通知（seat=-1 で「サーバー切断」を表す）
+        NET._onLeaveCb(-1);
+      }
+    });
+  },
+
+  // ---------- NTP風時計同期（WSモード専用） ----------
+  // 接続直後に8回ping、以後10秒ごとに2回ずつ再サンプル。
+  // 最小RTTのサンプルだけを採用する（遅延の下限 = 片道最小伝搬遅延）。
+  _startClockSync: function() {
+    const self = this;
+    let pingCount = 0;
+    const INITIAL_PINGS = 8;
+    const PING_INTERVAL_MS = 50;
+
+    function sendPing() {
+      if (!self._transport) return;
+      const t = performance.now();
+      self._transport.send({ type: "ping", t: t });
+    }
+
+    // 初回8発（50ms間隔）
+    const initial = setInterval(function() {
+      sendPing();
+      pingCount++;
+      if (pingCount >= INITIAL_PINGS) clearInterval(initial);
+    }, PING_INTERVAL_MS);
+
+    // 以後10秒ごとに2発
+    _resyncTimer = setInterval(function() {
+      sendPing();
+      setTimeout(sendPing, PING_INTERVAL_MS);
+    }, 10000);
+  },
+
+  // pong 受信時の処理（_handleMessage から呼ばれる）
+  _handlePong: function(msg) {
+    const now = performance.now();
+    const rtt = now - msg.t;
+    if (rtt < _minRtt) {
+      _minRtt = rtt;
+      // offsetMs = server - (t + rtt/2) = server - t - rtt/2
+      // performance.now() 基準に変換: server - (performance.now() at send time + rtt/2)
+      // = msg.server - msg.t - rtt/2 = msg.server - (msg.t + rtt/2)
+      _clockOffsetMs = msg.server - (msg.t + rtt / 2);
+    }
+  },
+
+  // 外部から呼べるサーバー時刻推定値（ms）
+  serverNowMs: function() {
+    return serverNowMs();
+  },
+
+  // ---------- seededRandom ----------
   rng: function() {
     if (!this._rng) {
       this._rng = makePRNG(this.cpuSeed);
@@ -164,44 +301,41 @@ const NET = {
     return this._rng;
   },
 
-  // ゲストが「スタートを押して待機中」であることをホストへ伝える
-  sendReady: function() {
+  // ---------- 送信API ----------
+
+  // ready 送信（localモード: ホストへ通知 / WSモード: サーバーへ送信）
+  sendReady: function(difficulty) {
     if (!this.online) return;
-    this._transport.send({ type: "ready", seat: this.mySeat });
+    const msg = { type: "ready", difficulty: difficulty || "normal" };
+    if (!this.wsMode) msg.seat = this.mySeat; // localモードは seat を付ける
+    this._transport.send(msg);
   },
 
-  // ready メッセージのコールバックを登録する（cb(seat)）
+  // ready コールバック登録（cb(seat)）
   onReady: function(cb) {
     this._onReadyCb = cb;
   },
 
-  // ホストがゲーム開始時刻を決め、全タブにブロードキャストする。
-  // game.js の armRound 相当を呼ぶ直前に実行する。
+  // localモード専用: ホストが start をブロードキャスト
   broadcastStart: function(t0, cpuSeed, players) {
-    if (!this.online || this.mySeat !== 0) return;
-    // ホスト自身のPRNGも配布シードで初期化し直す（ゲストは_handleMessageで初期化される。
-    // ここを忘れると2戦目以降ホストだけ乱数列が続きから進んでCPUの行動が分岐する）
+    if (!this.online || this.wsMode || this.mySeat !== 0) return;
     this.cpuSeed = cpuSeed;
     this._rng = makePRNG(cpuSeed);
-    this.readySeats = {}; // 次の試合のready待ちに備えてクリア
+    this.readySeats = {};
     const msg = {
       type: "start",
       t0: t0,
       cpuSeed: cpuSeed,
       players: players,
-      difficulty: G.difficulty, // ホストの難易度を全員に強制（拍間隔・判定窓・CPU確率の同期）
+      difficulty: G.difficulty,
     };
     this._transport.send(msg);
-    // ホスト自身も同じ情報で処理する
     if (this._onStartCb) this._onStartCb(msg);
   },
 
-  // 自分の入力を他タブへ送る。
-  // beat: 通し拍番号 / action: "point"|"haihai" / targets: ローカル席の配列
-  // result: "ok"|"miss"
+  // 自分の入力を送る（targets はローカル席配列→絶対席に変換して送信）
   sendInput: function(beat, action, targets, result) {
     if (!this.online) return;
-    // 送信する targets は絶対席番号（toAbs）に変換する
     const absTargets = targets.map(toAbs);
     const msg = {
       type: "input",
@@ -209,77 +343,104 @@ const NET = {
       action: action,
       targets: absTargets,
       result: result,
-      seat: this.mySeat,
     };
+    if (!this.wsMode) msg.seat = this.mySeat;
     this._transport.send(msg);
   },
 
-  // start メッセージのコールバックを登録する
+  // start コールバック登録
   onStart: function(cb) {
     this._onStartCb = cb;
   },
 
-  // ミス後の再開。ミスした本人のタブだけが送る（t0は壁時計ms・actorは絶対席）
+  // ミス後の再開リクエスト
+  // localモード: t0+actorAbs を自前でブロードキャスト
+  // WSモード: resume_req をサーバーへ送る（サーバーが resume を配る）
   sendResume: function(t0, actorAbs) {
     if (!this.online) return;
-    const msg = { type: "resume", t0: t0, actor: actorAbs };
-    this._transport.send(msg);
-    // 送信者自身も同じ情報で処理する（BroadcastChannelは自タブに届かない）
-    if (this._onResumeCb) this._onResumeCb(msg);
+    if (this.wsMode) {
+      this._transport.send({ type: "resume_req" });
+    } else {
+      const msg = { type: "resume", t0: t0, actor: actorAbs };
+      this._transport.send(msg);
+      if (this._onResumeCb) this._onResumeCb(msg);
+    }
   },
 
-  // resume メッセージのコールバックを登録する
+  // resume コールバック登録
   onResume: function(cb) {
     this._onResumeCb = cb;
   },
 
-  // 退出（タイトルへ戻る・タブを閉じる）を他のタブへ伝える
+  // 退出通知
   sendLeave: function() {
     if (!this.online || !this._transport) return;
-    this._transport.send({ type: "leave", seat: this.mySeat });
+    const msg = { type: "leave" };
+    if (!this.wsMode) msg.seat = this.mySeat;
+    this._transport.send(msg);
   },
 
-  // leave メッセージのコールバックを登録する（cb(seat)）
+  // leave コールバック登録（cb(seat)）
   onLeave: function(cb) {
     this._onLeaveCb = cb;
   },
 
-  // 他席のinputメッセージのコールバックを登録する
-  // cb(beat, localSeat, action, localTargets, result) の形で呼ばれる
+  // 他席の input コールバック登録
   onInput: function(cb) {
     this._onInputCb = cb;
   },
 
-  // 内部: メッセージハンドラ
+  // roster コールバック登録（cb(players)）: 待機画面の人数表示用
+  onRoster: function(cb) {
+    this._onRosterCb = cb;
+  },
+
+  // ---------- 内部メッセージハンドラ ----------
   _handleMessage: function(msg) {
-    if (msg.type === "start") {
+    if (msg.type === "joined") {
+      // WSモード専用: 自分の席番号が確定する
+      this.mySeat = msg.seat;
+      setSeat(msg.seat);
+      this.connected = true;
+      // 時計同期を開始
+      this._startClockSync();
+      // roster 相当の初期メンバー通知
+      if (this._onRosterCb && msg.players) this._onRosterCb(msg.players);
+    } else if (msg.type === "roster") {
+      if (this._onRosterCb) this._onRosterCb(msg.players);
+    } else if (msg.type === "pong") {
+      this._handlePong(msg);
+    } else if (msg.type === "start") {
       this.t0Server = msg.t0;
       this.cpuSeed = msg.cpuSeed;
-      // PRNGを正しいシードで（再）初期化
       this._rng = makePRNG(msg.cpuSeed);
-      this.readySeats = {}; // 次の試合のready待ちに備えてクリア
+      this.readySeats = {};
       if (this._onStartCb) this._onStartCb(msg);
-    } else if (msg.type === "ready") {
-      if (msg.seat === this.mySeat) return;
-      // 受信時刻を記録する（値=タイムスタンプ）。古いreadyを信用して
-      // いない相手に向かって開始する事故を防ぐため、鮮度で判定する
-      this.readySeats[msg.seat] = Date.now();
-      this.departedSeats[msg.seat] = false; // 再入室したら復帰扱い
-      if (this._onReadyCb) this._onReadyCb(msg.seat);
-    } else if (msg.type === "leave") {
-      if (msg.seat === this.mySeat) return;
-      this.departedSeats[msg.seat] = true;
-      delete this.readySeats[msg.seat];
-      if (this._onLeaveCb) this._onLeaveCb(msg.seat);
     } else if (msg.type === "resume") {
       if (this._onResumeCb) this._onResumeCb(msg);
+    } else if (msg.type === "ready") {
+      // localモード専用
+      if (msg.seat === this.mySeat) return;
+      this.readySeats[msg.seat] = Date.now();
+      this.departedSeats[msg.seat] = false;
+      if (this._onReadyCb) this._onReadyCb(msg.seat);
+    } else if (msg.type === "leave") {
+      if (!this.wsMode && msg.seat === this.mySeat) return;
+      const leavingSeat = msg.seat;
+      if (!this.wsMode) {
+        this.departedSeats[leavingSeat] = true;
+        delete this.readySeats[leavingSeat];
+      }
+      if (this._onLeaveCb) this._onLeaveCb(leavingSeat);
+    } else if (msg.type === "full") {
+      console.warn("saburo: 部屋が満員です");
+      if (this._onLeaveCb) this._onLeaveCb(-2); // -2 = 満員
     } else if (msg.type === "input") {
       // 自分自身のエコーは無視
       if (msg.seat === this.mySeat) return;
       if (this._onInputCb) {
-        // 絶対席→ローカル席に変換してから渡す
         const localSeat = toLocal(msg.seat);
-        const localTargets = msg.targets.map(toLocal);
+        const localTargets = (msg.targets || []).map(toLocal);
         this._onInputCb(msg.beat, localSeat, msg.action, localTargets, msg.result);
       }
     }
