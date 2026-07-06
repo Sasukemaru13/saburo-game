@@ -121,6 +121,7 @@ const NET = {
   _onStartCb: null,   // start メッセージを受けたときのコールバック(t0を渡す)
   _onInputCb: null,   // 他席のinputを受けたときのコールバック
   _onReadyCb: null,   // ready メッセージを受けたときのコールバック
+  _onResumeCb: null,  // resume メッセージを受けたときのコールバック
 
   // ready 待ち合わせ: 「もう一度」も含め、ホストは全ゲストのreadyを見てから開始を配る
   // （startを配った時点でクリアし、次の試合のreadyを待てるようにする）
@@ -213,6 +214,20 @@ const NET = {
     this._onStartCb = cb;
   },
 
+  // ミス後の再開。ミスした本人のタブだけが送る（t0は壁時計ms・actorは絶対席）
+  sendResume: function(t0, actorAbs) {
+    if (!this.online) return;
+    const msg = { type: "resume", t0: t0, actor: actorAbs };
+    this._transport.send(msg);
+    // 送信者自身も同じ情報で処理する（BroadcastChannelは自タブに届かない）
+    if (this._onResumeCb) this._onResumeCb(msg);
+  },
+
+  // resume メッセージのコールバックを登録する
+  onResume: function(cb) {
+    this._onResumeCb = cb;
+  },
+
   // 他席のinputメッセージのコールバックを登録する
   // cb(beat, localSeat, action, localTargets, result) の形で呼ばれる
   onInput: function(cb) {
@@ -232,6 +247,8 @@ const NET = {
       if (msg.seat === this.mySeat) return;
       this.readySeats[msg.seat] = true;
       if (this._onReadyCb) this._onReadyCb(msg.seat);
+    } else if (msg.type === "resume") {
+      if (this._onResumeCb) this._onResumeCb(msg);
     } else if (msg.type === "input") {
       // 自分自身のエコーは無視
       if (msg.seat === this.mySeat) return;

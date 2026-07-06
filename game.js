@@ -88,6 +88,7 @@ const G = {
   starterName: "",       // このラウンドの開始者名（イントロで表示）
   missInfo: "",          // 直前のミス内容（リスタートのイントロで表示）
   _lastMissKey: null,    // ミスの重複処理防止（beat:seat）
+  resumeSeat: null,      // interlude中、再開ボタンを押す担当（ローカル席。ミスした人）
 };
 
 // ---------- 音声 ----------
@@ -372,6 +373,7 @@ async function startRound() {
     });
 
     NET.onInput(handleRemoteInput);
+    NET.onResume(function(msg) { handleResume(msg.t0, msg.actor); });
 
     if (NET.mySeat === 0) {
       // ホスト: ゲスト（絶対席1）がスタートを押している（ready）のを確認してから開始を配る。
@@ -493,16 +495,35 @@ function handleMiss(seat, reason, beat) {
     return;
   }
 
-  // ライフが残っていれば「最後にミスした人」からリスタート（テンポは初速に戻す）
+  // ライフが残っていれば一時停止。ミスした人がスタートを押して再開する（自動再開しない）
   G.missInfo = name + " がミス（のこりライフ " + G.lives[seat] + "）";
-  const t0Next = (ev ? ev.t : audioCtx.currentTime) + 3.0;
+  G.resumeSeat = seat;
+  G.starterName = name;
+  round.pendingKeys = null;
+  G.turnActor = null;
+  G.mode = "interlude";
+}
+
+// interlude中、ミスした人（resumeSeat=自分）がスタートを押したら再開を全タブへ配る
+function tryResume() {
+  if (!G.online || G.mode !== "interlude") return;
+  if (G.resumeSeat !== 0) return; // 再開ボタンはミスした本人だけ
+  NET.sendResume(Date.now() + 2000, toAbs(G.resumeSeat));
+}
+
+// 再開メッセージ（自分・リモート共通）: ミスした人からテンポ初速で再スタート
+function handleResume(t0Wall, actorAbs) {
+  if (!G.online || G.mode !== "interlude") return;
+  if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
   round.interval = 60 / G.diff.bpm;
   G.bpmNow = G.diff.bpm;
   round.beats = 0;
   round.consec = [0, 0, 0, 0];
   round.pendingKeys = null;
+  G.resumeSeat = null;
   G.mode = "intro";
-  armRound(t0Next, seat);
+  const t0Local = audioCtx.currentTime + (t0Wall - Date.now()) / 1000;
+  armRound(t0Local, toLocal(actorAbs));
 }
 
 // 拍が進むごとに呼ぶ。RAMP_EVERY拍ごとにテンポを上げる（上限なし）
@@ -572,13 +593,13 @@ function doPoint(actor, targets) {
 
   // 同時さしボーナス: 連続の1回目だけ+2点。連続2回目は+1点、間をあければまた+2点
   // （consecは単独さしで0に戻るので「連続の何回目か」がそのまま分かる）
-  // オンライン時は actor === 0 が「そのタブの自分」を意味しタブ間でスコアが分岐するため、
-  // どの人間の同時さしでも+2にして全画面のスコアを一致させる
-  let gain = 1;
-  const firstDouble = targets.length === 2 && round.consec[actor] === 0;
-  if (G.online ? firstDouble : (actor === 0 && firstDouble)) gain = 2;
-  G.score += gain;
-  addPopup(actor, gain);
+  // オンライン対戦は勝ち負けで決まるため点数なし（永明決定 2026-07-06）
+  if (!G.online) {
+    let gain = 1;
+    if (actor === 0 && targets.length === 2 && round.consec[0] === 0) gain = 2;
+    G.score += gain;
+    addPopup(actor, gain);
+  }
   maybeRamp();
 
   if (targets.length === 2) {
@@ -837,8 +858,10 @@ function update() {
     }
     // 全員完了したら手番が同時指しした人に戻る
     if (ev.cpuDone && ev.playerDone && now >= ev.t) {
-      G.score++;
-      addPopup(ev.returnTo, 1);
+      if (!G.online) {
+        G.score++;
+        addPopup(ev.returnTo, 1);
+      }
       maybeRamp();
       advanceEvent({ type: "point", t: ev.t + round.interval, actor: ev.returnTo });
       prepareCpu();
@@ -966,6 +989,11 @@ window.addEventListener("keydown", (e) => {
     return;
   }
 
+  if (G.mode === "interlude") {
+    tryResume(); // どのキーでも可（押せるのはミスした本人だけ）
+    return;
+  }
+
   if (!audioCtx || !round) return;
   const t = audioCtx.currentTime;
 
@@ -1061,6 +1089,10 @@ function handleTapUI(pos) {
   if (G.mode === "gameover") {
     if (inRect(pos, 120, 462, 240, 52)) startRound();
     else if (inRect(pos, 160, 524, 160, 34)) { G.mode = "title"; playUiPop(); }
+    return true;
+  }
+  if (G.mode === "interlude") {
+    tryResume(); // どこをタップしても可（押せるのはミスした本人だけ）
     return true;
   }
   return false;

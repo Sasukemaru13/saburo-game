@@ -540,32 +540,37 @@ function drawBeatRing(G) {
 }
 
 function drawHUD(G) {
-  // スコア（上部の空白を使って大きく）
   ctx.textBaseline = "alphabetic";
-  ctx.textAlign = "left";
-  ctx.shadowColor = "rgba(0,0,0,0.5)";
-  ctx.shadowBlur = 8;
-  ctx.fillStyle = "#fff";
-  ctx.font = F(68, 800);
-  const numText = String(G.score);
-  const numW = ctx.measureText(numText).width;
-  ctx.font = F(26, 800);
-  const unitW = ctx.measureText("点").width;
-  const x0 = 240 - (numW + 10 + unitW) / 2;
-  ctx.font = F(68, 800);
-  ctx.fillText(numText, x0, 96);
-  ctx.font = F(26, 800);
-  ctx.fillStyle = "#c5cce6";
-  ctx.fillText("点", x0 + numW + 10, 96);
-  ctx.shadowBlur = 0;
-  ctx.shadowColor = "transparent";
+  // 点数はオンライン対戦では出さない（勝ち負けで決まるルール・2026-07-06）
+  if (!G.online) {
+    // スコア（上部の空白を使って大きく）
+    ctx.textAlign = "left";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = "#fff";
+    ctx.font = F(68, 800);
+    const numText = String(G.score);
+    const numW = ctx.measureText(numText).width;
+    ctx.font = F(26, 800);
+    const unitW = ctx.measureText("点").width;
+    const x0 = 240 - (numW + 10 + unitW) / 2;
+    ctx.font = F(68, 800);
+    ctx.fillText(numText, x0, 96);
+    ctx.font = F(26, 800);
+    ctx.fillStyle = "#c5cce6";
+    ctx.fillText("点", x0 + numW + 10, 96);
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+  }
 
   ctx.font = F(13);
   ctx.fillStyle = "#9aa3c0";
   ctx.textAlign = "left";
   ctx.fillText(`${G.diff.label}　BPM ${G.bpmNow}`, 14, 24);
-  ctx.textAlign = "right";
-  ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, W - 14, 24);
+  if (!G.online) {
+    ctx.textAlign = "right";
+    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, W - 14, 24);
+  }
 
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
@@ -781,25 +786,35 @@ function drawGameOver(G) {
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "#e8554d";
-  ctx.font = F(32, 800);
-  ctx.fillText("リズムが止まった！", 240, 284);
-  ctx.fillStyle = "#c5cce6";
-  ctx.font = F(15);
-  ctx.fillText(G.loseReason, 240, 316);
-
-  ctx.fillStyle = "#fff";
-  ctx.font = F(60, 800);
-  ctx.fillText(`${G.score} 点`, 240, 398);
-
-  if (G.newBest) {
+  if (G.online) {
+    // オンライン対戦: 勝敗のみ（点数なし）
     ctx.fillStyle = "#ffd95e";
-    ctx.font = F(22, 800);
-    ctx.fillText("ベスト更新！", 240, 438);
+    ctx.font = F(32, 800);
+    ctx.fillText("試合終了！", 240, 284);
+    ctx.fillStyle = "#fff";
+    ctx.font = F(26, 800);
+    ctx.fillText(G.loseReason, 240, 398);
   } else {
-    ctx.fillStyle = "#9aa3c0";
+    ctx.fillStyle = "#e8554d";
+    ctx.font = F(32, 800);
+    ctx.fillText("リズムが止まった！", 240, 284);
+    ctx.fillStyle = "#c5cce6";
     ctx.font = F(15);
-    ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, 240, 438);
+    ctx.fillText(G.loseReason, 240, 316);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = F(60, 800);
+    ctx.fillText(`${G.score} 点`, 240, 398);
+
+    if (G.newBest) {
+      ctx.fillStyle = "#ffd95e";
+      ctx.font = F(22, 800);
+      ctx.fillText("ベスト更新！", 240, 438);
+    } else {
+      ctx.fillStyle = "#9aa3c0";
+      ctx.font = F(15);
+      ctx.fillText(`ベスト ${G.bests[G.difficulty]} 点`, 240, 438);
+    }
   }
 
   // もう一度（タップ/Rキー）。当たり判定は game.js の handleTapUI と揃えること
@@ -813,6 +828,40 @@ function drawGameOver(G) {
   ctx.fillStyle = "#9aa3c0";
   ctx.font = F(15);
   ctx.fillText(IS_TOUCH ? "タイトルへ" : "タイトルへ (T)", 240, 546);
+}
+
+// オンライン: ミス後の一時停止画面。ミスした本人だけが再開ボタンを押せる
+function drawInterlude(G) {
+  ctx.fillStyle = "rgba(15, 13, 22, 0.72)";
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#ff8a80";
+  ctx.font = F(24, 800);
+  ctx.fillText(G.missInfo || "ミス！", 240, 300);
+
+  const isMe = G.resumeSeat === 0;
+  if (isMe) {
+    // 再開ボタン（当たり判定は画面全体: game.js の handleTapUI と対応）
+    ctx.fillStyle = "#ffd95e";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 16;
+    rrect(110, 380, 260, 58, 16);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#2a2520";
+    ctx.font = F(22, 800);
+    ctx.fillText(IS_TOUCH ? "スタート" : "スタート（どれかのキー）", 240, 417);
+    ctx.fillStyle = "#c5cce6";
+    ctx.font = F(15);
+    ctx.fillText("あなたからリスタート", 240, 470);
+  } else {
+    ctx.fillStyle = "#c5cce6";
+    ctx.font = F(18, 700);
+    ctx.fillText((G.starterName || "相手") + " のスタート待ち…", 240, 410);
+  }
 }
 
 function drawIntro(G) {
@@ -991,6 +1040,7 @@ function render(G, now) {
   drawHUD(G);
 
   if (G.mode === "intro") drawIntro(G);
+  if (G.mode === "interlude") drawInterlude(G);
   if (G.mode === "gameover") drawGameOver(G);
 
   // 音声時計が止まっている（iOSのsuspended）ときはタップを促す
