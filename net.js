@@ -189,6 +189,7 @@ const NET = {
       t0: t0,
       cpuSeed: cpuSeed,
       players: players,
+      difficulty: G.difficulty, // ホストの難易度を全員に強制（拍間隔・判定窓・CPU確率の同期）
     };
     this._transport.send(msg);
     // ホスト自身も同じ情報で処理する
@@ -260,7 +261,9 @@ const NET = {
       if (this._onStartCb) this._onStartCb(msg);
     } else if (msg.type === "ready") {
       if (msg.seat === this.mySeat) return;
-      this.readySeats[msg.seat] = true;
+      // 受信時刻を記録する（値=タイムスタンプ）。古いreadyを信用して
+      // いない相手に向かって開始する事故を防ぐため、鮮度で判定する
+      this.readySeats[msg.seat] = Date.now();
       this.departedSeats[msg.seat] = false; // 再入室したら復帰扱い
       if (this._onReadyCb) this._onReadyCb(msg.seat);
     } else if (msg.type === "leave") {

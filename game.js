@@ -89,6 +89,8 @@ const G = {
   missInfo: "",          // 直前のミス内容（リスタートのイントロで表示）
   _lastMissKey: null,    // ミスの重複処理防止（beat:seat）
   resumeSeat: null,      // interlude中、再開ボタンを押す担当（ローカル席。ミスした人）
+  onlineWaiting: false,  // 開始前の待ち合わせ中か（待機画面のヒント表示用）
+  _readyTimer: null,     // ゲストのready再送タイマー
 };
 
 // ---------- 音声 ----------
@@ -355,6 +357,14 @@ async function startRound() {
     NET.onStart(function(msg) {
       // 自分がスタート待ち状態のときだけ受け付ける（ゲームオーバー画面等での誤発動防止）
       if (G.mode !== "intro") return;
+      // 難易度はホストの指定に合わせる（拍間隔・判定窓・CPU同時さし確率＝乱数消費が
+      // 全タブで一致しないと決定論が壊れる）
+      if (msg.difficulty && DIFFICULTIES[msg.difficulty]) {
+        G.difficulty = msg.difficulty;
+        G.diff = DIFFICULTIES[msg.difficulty];
+        round.interval = 60 / G.diff.bpm;
+        G.bpmNow = G.diff.bpm;
+      }
       if (msg.players) {
         G.players = msg.players;
         G.humanSeats = msg.players
@@ -396,7 +406,10 @@ async function startRound() {
       // 「もう一度」でも同じ経路を通るので、両方が押すまで始まらない
       const tryStart = function() {
         if (G.mode !== "intro") return;      // ホスト自身がスタート待ちのときだけ
-        if (!NET.readySeats[1]) return;      // ローカル2タブ版: ゲスト=絶対席1
+        // ローカル2タブ版: ゲスト=絶対席1。3秒以内の新鮮なreadyだけ信用する
+        // （古いreadyでいない相手に向かって開始する事故の防止。ゲストは待機中1秒ごとに再送する）
+        const ts = NET.readySeats[1];
+        if (!ts || Date.now() - ts > 3000) return;
         const t0 = Date.now() + 2000;
         // シードは毎試合ホストが新しく配る（固定だと毎回CPUが同じ動きになる）
         const seed = (Date.now() ^ Math.floor(Math.random() * 0xffffffff)) >>> 0;
@@ -411,12 +424,25 @@ async function startRound() {
       NET.onReady(tryStart);
       tryStart(); // ゲストが先にreadyを送っていた場合は即開始
     } else {
-      // ゲスト: readyを送って start を待つ
+      // ゲスト: readyを送って start を待つ。
+      // 待機中は1秒ごとに再送する（自分より後にホストのタブが開かれた場合、
+      // 最初の1発はどこにも届かず両者が永遠に待つため）
       NET.sendReady();
+      if (G._readyTimer) clearInterval(G._readyTimer);
+      G._readyTimer = setInterval(function() {
+        const waiting = G.online && G.mode === "intro" && round && !round.event;
+        if (waiting) {
+          NET.sendReady();
+        } else {
+          clearInterval(G._readyTimer);
+          G._readyTimer = null;
+        }
+      }, 1000);
     }
 
     // 待ち合わせ中の表示（armRoundが呼ばれてintroが進み始めると上書きされる）
     G.introText = NET.mySeat === 0 ? "相手を待っています…" : "ホストを待っています…";
+    G.onlineWaiting = true;
   } else {
     // 1人用: 従来どおり音声時計が動き出したら armRound
     if (audioCtx.state === "running") armRound();
@@ -437,6 +463,7 @@ function armRound(t0Override, firstActorLocal) {
     ? firstActorLocal
     : (G.online ? toLocal(0) : 0);
   G.starterName = G.chars[firstActor] ? G.chars[firstActor].name : "";
+  G.onlineWaiting = false; // 待ち合わせ終了
   // 通し拍番号はリスタートを跨いでも巻き戻さない（人間手番ゲート・ミス重複防止のキー）
   if (round.beatCounter === undefined) round.beatCounter = 0;
   round.beatCounter++;
@@ -1010,6 +1037,12 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       tryResume(); // Spaceのみ（押せるのはミスした本人だけ）
     }
+    return;
+  }
+
+  // オンラインの待ち合わせ中（開始前）は T でタイトルへ戻れる（抜け道の確保）
+  if (G.online && G.mode === "intro" && round && !round.event) {
+    if (key === "t") goTitle();
     return;
   }
 

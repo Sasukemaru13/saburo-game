@@ -891,6 +891,12 @@ function drawIntro(G) {
   ctx.fillStyle = "#ffd95e";
   ctx.font = F(32, 800);
   ctx.fillText(G.introText || "", 240, 170);
+  // 待ち合わせ中は戻り方も示す（相手が来ないと抜けられない画面にしない）
+  if (G.onlineWaiting) {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = F(14);
+    ctx.fillText("T キーでタイトルへ戻る", 240, 210);
+  }
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
 }
