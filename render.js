@@ -705,11 +705,13 @@ function drawTitle(G, now) {
     ctx.fillText(IS_TOUCH ? d.label : `${i + 1} ${d.label}`, r.x + r.w / 2, r.y + 35);
   });
 
-  // 選択中の難易度のベストだけを1行で
+  // 選択中の難易度のベストだけを1行で（オンライン対戦は点数制じゃないのでベストは出さない）
   ctx.fillStyle = "#9aa3c0";
   ctx.font = F(15);
   ctx.fillText(
-    `BPM ${DIFFICULTIES[G.difficulty].bpm}〜　ベスト ${G.bests[G.difficulty]} 点`,
+    G.online
+      ? `BPM ${DIFFICULTIES[G.difficulty].bpm}〜`
+      : `BPM ${DIFFICULTIES[G.difficulty].bpm}〜　ベスト ${G.bests[G.difficulty]} 点`,
     240, 556
   );
 
