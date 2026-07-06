@@ -1246,6 +1246,11 @@ function handleTapUI(pos) {
     tryResume(); // どこをタップしても可（押せるのはミスした本人だけ）
     return true;
   }
+  // オンラインの待ち合わせ中（開始前）: 「タイトルへ」ボタン（render.jsと座標を揃える）
+  if (G.online && G.mode === "intro" && round && !round.event) {
+    if (inRect(pos, 170, 678, 140, 44)) goTitle();
+    return true; // 待機中の誤タップをゲーム入力に流さない
+  }
   return false;
 }
 

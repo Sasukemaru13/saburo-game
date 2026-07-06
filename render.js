@@ -910,10 +910,25 @@ function drawIntro(G) {
   ctx.font = F(32, 800);
   ctx.fillText(G.introText || "", 240, 170);
   // 待ち合わせ中は戻り方も示す（相手が来ないと抜けられない画面にしない）
+  // タップ用ボタンの当たり判定は game.js の handleTapUI と座標を揃えること（170,678,140,44）
   if (G.onlineWaiting) {
-    ctx.fillStyle = "#9aa3c0";
-    ctx.font = F(14);
-    ctx.fillText("T キーでタイトルへ戻る", 240, 210);
+    ctx.fillStyle = "rgba(38, 43, 61, 0.95)";
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 10;
+    rrect(170, 678, 140, 44, 12);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
+    ctx.fillStyle = "#c5cce6";
+    ctx.font = F(17, 800);
+    ctx.textBaseline = "middle";
+    ctx.fillText("タイトルへ", 240, 700);
+    ctx.textBaseline = "alphabetic";
+    if (!IS_TOUCH) {
+      ctx.fillStyle = "#9aa3c0";
+      ctx.font = F(13);
+      ctx.fillText("（T キーでも戻れる）", 240, 740);
+    }
   }
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
