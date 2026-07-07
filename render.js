@@ -708,8 +708,7 @@ function drawTitle(G, now) {
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
   ctx.fillStyle = "#2a2520";
-  ctx.font = F(24, 800);
-  ctx.fillText("お辞儀する（START）", 0, 9);
+  fillTextFit("お辞儀する（START）", 0, 9, 24, 800, s.w - 24);
   ctx.restore();
   if (!IS_TOUCH) {
     ctx.fillStyle = "#9aa3c0";
@@ -972,8 +971,7 @@ function drawGameOver(G) {
   rrect(120, 462, 240, 52, 16);
   ctx.fill();
   ctx.fillStyle = "#2a2520";
-  ctx.font = F(21, 800);
-  ctx.fillText(IS_TOUCH ? "お辞儀する（START）" : "お辞儀する（START）(R)", 240, 496);
+  fillTextFit(IS_TOUCH ? "お辞儀する（START）" : "お辞儀する（START）(R)", 240, 496, 21, 800, 220);
 
   ctx.fillStyle = "#9aa3c0";
   ctx.font = F(15);
