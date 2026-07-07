@@ -687,33 +687,12 @@ function drawTitle(G, now) {
     ctx.textBaseline = "alphabetic";
   }
 
-  // 難易度ピル（横並び）
-  const keys = Object.keys(DIFFICULTIES);
-  keys.forEach((k, i) => {
-    const d = DIFFICULTIES[k];
-    const r = TITLE_UI.pills[i];
-    const sel = G.difficulty === k;
-    ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
-    ctx.shadowColor = sel ? "rgba(255, 200, 80, 0.5)" : "rgba(0,0,0,0.4)";
-    ctx.shadowBlur = sel ? 16 : 6;
-    rrect(r.x, r.y, r.w, r.h, r.h / 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.shadowColor = "transparent";
-    ctx.fillStyle = sel ? "#222" : "#e8e4f5";
-    ctx.font = F(19, 800);
-    ctx.fillText(IS_TOUCH ? d.label : `${i + 1} ${d.label}`, r.x + r.w / 2, r.y + 35);
-  });
-
-  // 選択中の難易度のベストだけを1行で（オンライン対戦は点数制じゃないのでベストは出さない）
-  ctx.fillStyle = "#9aa3c0";
-  ctx.font = F(15);
-  ctx.fillText(
-    G.online
-      ? `BPM ${DIFFICULTIES[G.difficulty].bpm}〜`
-      : `BPM ${DIFFICULTIES[G.difficulty].bpm}〜　ベスト ${G.bests[G.difficulty]} 点`,
-    240, 556
-  );
+  // ベスト（1人用のみ。難易度選択廃止によりnormal固定）
+  if (!G.online) {
+    ctx.fillStyle = "#9aa3c0";
+    ctx.font = F(15);
+    ctx.fillText(`BPM ${DIFFICULTIES.normal.bpm}〜　ベスト ${G.bests.normal} 点`, 240, 556);
+  }
 
   // スタートボタン
   const s = TITLE_UI.start;
@@ -730,12 +709,12 @@ function drawTitle(G, now) {
   ctx.shadowColor = "transparent";
   ctx.fillStyle = "#2a2520";
   ctx.font = F(24, 800);
-  ctx.fillText("▶ スタート", 0, 9);
+  ctx.fillText("お辞儀する（START）", 0, 9);
   ctx.restore();
   if (!IS_TOUCH) {
     ctx.fillStyle = "#9aa3c0";
     ctx.font = F(13);
-    ctx.fillText("Space でもスタート", 240, s.y + s.h + 24);
+    ctx.fillText("Space でもお辞儀する", 240, s.y + s.h + 24);
   }
 
   // あそびかた（小さく）
@@ -877,23 +856,9 @@ function drawRanking(G, now) {
   ctx.font = F(26, 800);
   ctx.fillText("グローバルランキング", 240, 106);
 
-  // 難易度ピル（タップ/1-3キーで再fetch。矩形は RANKING_UI と共有）
-  const keys = Object.keys(DIFFICULTIES);
-  keys.forEach(function(k, i) {
-    const d = DIFFICULTIES[k];
-    const r = RANKING_UI.pills[i];
-    const sel = G.rankingScreen && G.rankingScreen.difficulty === k;
-    ctx.fillStyle = sel ? "#ffd95e" : "rgba(57, 64, 92, 0.85)";
-    rrect(r.x, r.y, r.w, r.h, r.h / 2);
-    ctx.fill();
-    ctx.fillStyle = sel ? "#222" : "#e8e4f5";
-    ctx.font = F(14, 800);
-    ctx.fillText(IS_TOUCH ? d.label : (i + 1) + " " + d.label, r.x + r.w / 2, r.y + 24);
-  });
-
-  // ランキング本体
+  // ランキング本体（難易度ピル廃止・normal固定）
   const rs = G.rankingScreen;
-  const listY = 178;
+  const listY = 138;
   if (!rs || rs.state === "loading") {
     ctx.fillStyle = "#9aa3c0";
     ctx.font = F(16);
@@ -1006,7 +971,7 @@ function drawGameOver(G) {
   ctx.fill();
   ctx.fillStyle = "#2a2520";
   ctx.font = F(21, 800);
-  ctx.fillText(IS_TOUCH ? "もう一度" : "もう一度 (R)", 240, 496);
+  ctx.fillText(IS_TOUCH ? "お辞儀する（START）" : "お辞儀する（START）(R)", 240, 496);
 
   ctx.fillStyle = "#9aa3c0";
   ctx.font = F(15);
@@ -1020,7 +985,7 @@ function drawGameOver(G) {
     ctx.font = F(12, 800);
     ctx.fillStyle = "#ffd95e";
     ctx.textAlign = "center";
-    ctx.fillText("みんなのベスト（" + G.difficulty + "）", 240, 576);
+    ctx.fillText("みんなのベスト", 240, 576);
     ctx.font = F(12);
     ctx.fillStyle = "#c5cce6";
     for (let ri = 0; ri < G.rankingList.length; ri++) {
@@ -1048,7 +1013,7 @@ function drawInterlude(G) {
   if (isMe) {
     // 再開ボタン（当たり判定は画面全体: game.js の handleTapUI と対応）
     // ボタンはラベル幅から余白を取って描く（文字に対して背景が窮屈にならないように）
-    const label = IS_TOUCH ? "スタート" : "スタート（Space）";
+    const label = IS_TOUCH ? "お辞儀する（START）" : "お辞儀する（START）";
     ctx.font = F(24, 800);
     const labelW = ctx.measureText(label).width;
     const btnW = labelW + 88; // 左右余白 44px ずつ

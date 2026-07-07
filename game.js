@@ -372,14 +372,11 @@ async function startRound() {
       // ready再送が開始と行き違うとサーバーが二重にstartを配ることがあり、
       // これを受けるとイントロ中に試合が組み直されて「勝手にスタート」に見える
       if (round && round.event) return;
-      // 難易度はホストの指定に合わせる（拍間隔・判定窓・CPU同時さし確率＝乱数消費が
-      // 全タブで一致しないと決定論が壊れる）
-      if (msg.difficulty && DIFFICULTIES[msg.difficulty]) {
-        G.difficulty = msg.difficulty;
-        G.diff = DIFFICULTIES[msg.difficulty];
-        round.interval = 60 / G.diff.bpm;
-        G.bpmNow = G.diff.bpm;
-      }
+      // 難易度は常に "normal" 固定（UIを廃止してふつう固定にしたため）
+      G.difficulty = "normal";
+      G.diff = DIFFICULTIES.normal;
+      round.interval = 60 / G.diff.bpm;
+      G.bpmNow = G.diff.bpm;
       if (msg.players) {
         G.players = msg.players;
         G.humanSeats = msg.players
@@ -486,12 +483,12 @@ async function startRound() {
       NET.ensureConnected();
       // 接続確立前にスタートを押すと最初の送信は握り潰される（readyState未OPEN）ため、
       // 待機中は1秒ごとに再送する（サーバー側は冪等なので害なし）
-      NET.sendReady(G.difficulty);
+      NET.sendReady("normal");
       if (G._readyTimer) clearInterval(G._readyTimer);
       G._readyTimer = setInterval(function() {
         const waiting = G.online && G.mode === "intro" && round && !round.event;
         if (waiting) {
-          NET.sendReady(G.difficulty);
+          NET.sendReady("normal");
         } else {
           clearInterval(G._readyTimer);
           G._readyTimer = null;
@@ -509,6 +506,32 @@ async function startRound() {
         const list = players || NET.lastPlayers || [];
         const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
         const readyCount = list.filter(function(p) { return p.ready; }).length;
+        // お辞儀した（ready）プレイヤーから順に席名をDiscord名に切り替える演出
+        // G.charsはstartRound時点では makeChars() = CPUキャラ名で初期化されている
+        if (G.onlineWaiting && G.chars) {
+          const WAIT_CPU_NAMES = ["太郎", "一郎", "二郎", "四郎"];
+          for (let local = 0; local < 4; local++) {
+            const abs = toAbs(local);
+            const player = list.find(function(p) { return p.seat === abs; });
+            if (!player) continue;
+            if (player.kind === "human" && player.ready) {
+              // ready済みならDiscord名を表示（自分は「名前（あなた）」形式）
+              const displayName = local === 0
+                ? (player.name ? player.name + "（あなた）" : "あなた")
+                : (player.name || "P" + (abs + 1));
+              if (G.chars[local]) {
+                G.chars[local].name = displayName;
+                G.chars[local].kind = "human";
+              }
+            } else if (player.kind === "human" && !player.ready) {
+              // まだお辞儀していない人間席はCPU名のまま
+              if (G.chars[local]) {
+                G.chars[local].name = WAIT_CPU_NAMES[abs];
+                G.chars[local].kind = "cpu";
+              }
+            }
+          }
+        }
         // フェーズ3: 試合中（inProgress）なら「試合中・終了待ち」を補足に出す
         if (NET.inProgress) {
           G.introText = "参加者 " + humanCount + " 人";
@@ -555,12 +578,12 @@ async function startRound() {
         tryStart();
       } else {
         // ゲスト: readyを送って start を待つ。1秒ごとに再送
-        NET.sendReady(G.difficulty);
+        NET.sendReady("normal");
         if (G._readyTimer) clearInterval(G._readyTimer);
         G._readyTimer = setInterval(function() {
           const waiting = G.online && G.mode === "intro" && round && !round.event;
           if (waiting) {
-            NET.sendReady(G.difficulty);
+            NET.sendReady("normal");
           } else {
             clearInterval(G._readyTimer);
             G._readyTimer = null;
@@ -1354,9 +1377,6 @@ window.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
 
   if (G.mode === "title") {
-    if (key === "1") { G.difficulty = "easy"; playUiSelect("easy"); return; }
-    if (key === "2") { G.difficulty = "normal"; playUiSelect("normal"); return; }
-    if (key === "3") { G.difficulty = "hard"; playUiSelect("hard"); return; }
     if (key === "h") { openHowto(); return; }
     // ランキング（1人用のみ）
     if (key === "r" && !G.online) { openRanking(); return; }
@@ -1368,22 +1388,6 @@ window.addEventListener("keydown", (e) => {
   }
 
   if (G.mode === "ranking") {
-    // ランキング画面: 1/2/3 で難易度切替、それ以外で閉じる
-    if (key === "1") {
-      G.difficulty = "easy";
-      fetchRankingScreen("easy");
-      return;
-    }
-    if (key === "2") {
-      G.difficulty = "normal";
-      fetchRankingScreen("normal");
-      return;
-    }
-    if (key === "3") {
-      G.difficulty = "hard";
-      fetchRankingScreen("hard");
-      return;
-    }
     closeRanking();
     return;
   }
@@ -1505,32 +1509,15 @@ function closeHowto() {
 
 function handleTapUI(pos) {
   if (G.mode === "title") {
-    const card = hitDifficulty(pos);
     const s = TITLE_UI.start;
     const h = TITLE_UI.howto;
     const rk = TITLE_UI.ranking;
-    if (card) {
-      G.difficulty = card;
-      playUiSelect(card);
-    }
-    else if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
+    if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
     else if (inRect(pos, h.x, h.y, h.w, h.h)) openHowto();
     else if (rk && !G.online && inRect(pos, rk.x, rk.y, rk.w, rk.h)) openRanking();
     return true;
   }
   if (G.mode === "ranking") {
-    // 難易度ピルのタップで切り替え。当たり判定は描画と同じ RANKING_UI を使う
-    // （hitDifficultyはタイトル画面のピル座標なのでここでは使えない）
-    const keys = Object.keys(DIFFICULTIES);
-    for (let i = 0; i < RANKING_UI.pills.length; i++) {
-      const r = RANKING_UI.pills[i];
-      if (inRect(pos, r.x, r.y, r.w, r.h)) {
-        G.difficulty = keys[i];
-        playUiSelect(keys[i]);
-        fetchRankingScreen(keys[i]);
-        return true;
-      }
-    }
     closeRanking();
     return true;
   }
