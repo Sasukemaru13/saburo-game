@@ -448,10 +448,29 @@ async function startRound() {
       }
     });
 
-    // フェーズ3: サーバー公式タイムアウトミス宣言を受け入れる
-    // beat:seat の重複防止は handleMiss 側の _lastMissKey で吸収される
+    // フェーズ3: サーバー公式ミス宣言（バグ3修正で同時ミス裁定にも使う）
+    // サーバーが採用した1件だけが全員に届く。楽観適用したものと食い違う場合はリコンサイル
     NET.onMissDecl(function(absSeat, beat, reason) {
-      handleMiss(toLocal(absSeat), reason || "反応できなかった…（時間切れ）", beat);
+      const localSeat = toLocal(absSeat);
+      const key = beat + ":" + localSeat;
+      // すでに同一beat:seatのミスを処理済みなら重複適用しない（楽観適用と一致した場合）
+      if (G._lastMissKey === key) return;
+      // 別人のミスがサーバーから届いた場合（楽観適用した自分のミスを巻き戻す必要あり）:
+      // 自分が既にinterludeに入っていて別beatのリコンサイルが必要なケースを検出する
+      const myKey = beat + ":0"; // 自分のローカル席は常に0
+      if (G._lastMissKey === myKey && localSeat !== 0) {
+        // 自分のミスを楽観適用済みだが、サーバーは別人を採用 → 自分のミスを取り消して
+        // 別人のミスで上書きする（interlude表示・resumeSeat・ライフ減を再設定）
+        G._lastMissKey = null; // 重複防止キーをリセットして下の handleMiss を通す
+        // ライフを +1 して楽観適用分を戻す（死亡判定も取り消し）
+        G.lives[0] = Math.min(3, G.lives[0] + 1);
+        if (G.chars[0] && G.chars[0].kind === "cpu") {
+          // CPU化を戻す（まだ生きていた）
+          G.chars[0].kind = "human";
+          if (!G.humanSeats.includes(0)) G.humanSeats.push(0);
+        }
+      }
+      handleMiss(localSeat, reason || "反応できなかった…（時間切れ）", beat);
     });
 
     // フェーズ3: 試合終了の再配布（自分が送ったものも返ってくる）
@@ -501,8 +520,11 @@ async function startRound() {
         if (!NET.connected) {
           G.introText = "接続中…";
           G.introSub = "";
+          // バグ4修正: 「接続中」表示になったらウォッチドッグを起動する
+          _startConnectingWatchdog();
           return;
         }
+        _clearConnectingWatchdog(); // 接続できたらウォッチドッグをリセット
         const list = players || NET.lastPlayers || [];
         const humanCount = list.filter(function(p) { return p.kind === "human"; }).length;
         const readyCount = list.filter(function(p) { return p.ready; }).length;
@@ -773,8 +795,17 @@ function reportSelfMiss(reason) {
   if (G.chars[0] && G.chars[0].kind === "cpu") return;
   const ev = round && round.event;
   const beat = ev ? ev.beat : -1;
-  NET.sendInput(beat, "miss", [], "miss", reason); // 理由も送る（相手画面のミス表示用）
-  handleMiss(0, reason, beat);
+  // バグ3修正: WSモードではサーバーを裁定役にする（先着1件制）。
+  // miss_declをサーバーへ送り、サーバーが採用した1件だけが全員に中継される。
+  // 楽観的にローカル即適用するが、別人のmiss_declが届いたら上書き（リコンサイル）する。
+  // localモードは従来どおりinput(miss)経由（同一マシンなのでレースが起きない）
+  if (NET.wsMode) {
+    NET.sendMissDecl(beat, toAbs(0), reason);
+    handleMiss(0, reason, beat); // 楽観適用（サーバーが別人を採用した場合は上書き）
+  } else {
+    NET.sendInput(beat, "miss", [], "miss", reason);
+    handleMiss(0, reason, beat);
+  }
 }
 
 // ミス確定（自分・リモート共通）。ライフを減らし、リスタートか試合終了へ
@@ -822,6 +853,8 @@ function handleMiss(seat, reason, beat) {
 }
 
 // interlude中、ミスした人（resumeSeat=自分）がスタートを押したら再開を全タブへ配る
+// バグ1修正: 死亡者（G.chars[0].kind==="cpu"）でもresumeSeat===0なら送れるようにする。
+// 死亡後はCPU代走に切り替わって試合を続けるため、再開を押す権利は変わらない
 function tryResume() {
   if (!G.online || G.mode !== "interlude") return;
   if (G.resumeSeat !== 0) return; // 再開ボタンはミスした本人だけ
@@ -910,6 +943,36 @@ function addPopup(actor, gain) {
 // 実効判定窓: 高速域では拍間隔の40%まで自動で締まる（窓が拍より広いと壊れるため）
 function winNow() {
   return Math.min(G.diff.window, round.interval * 0.4);
+}
+
+// バグ2修正: 高ping環境でいきなりアウトになる問題への猶予計算。
+// さされた通知を受信した時刻（_pointRecvTime）を記録し、応答期限を
+//   「共有拍基準の期限」と「受信時刻 + MIN_RESPONSE_GRACE（拍間隔の80%）」
+// の遅い方にする。ただし共有拍基準 + 1拍を超えないようにクリップする。
+//
+// 【決定論への影響】: この猶予はローカル判定のみに効く。相手タブや
+// サーバーは「自分の入力メッセージの到着」で判定するので決定論は壊れない。
+// ただし stall_report が猶予より先に発動しないよう、送信タイマーを
+// MIN_RESPONSE_GRACE + STALL_MARGIN 以上（定数化）に保つこと
+//
+// MIN_RESPONSE_GRACE: 拍間隔の80%。100BPMなら約0.48秒。高pingでも最低これだけ応答できる
+const MIN_RESPONSE_GRACE_RATIO = 0.8;
+// STALL_MARGIN: stall_reportを猶予終了後に余裕を持って送るための追加マージン（秒）
+const STALL_MARGIN = 0.5;
+
+// さされた（point手番が自分に来た）通知の受信時刻を記録する。
+// handleRemoteInput で相手の「point → 自分さし」が確定したタイミングで呼ぶ
+let _pointRecvTime = 0; // audioCtx.currentTime 基準（秒）
+
+// 自分の応答期限を返す。通常は共有拍基準の期限を返し、
+// 受信が遅れた場合は猶予を加算した値にする（上限は共有拍基準+1拍）
+function selfDeadline(ev) {
+  const grace = round.interval * MIN_RESPONSE_GRACE_RATIO;
+  const graceDeadline = _pointRecvTime + grace;
+  const beatDeadline = ev.t + winNow();
+  // 上限: 共有拍基準 + 1拍（無限に伸ばさない）
+  const cap = ev.t + round.interval;
+  return Math.min(cap, Math.max(beatDeadline, graceDeadline));
 }
 
 function advanceEvent(nextEvent) {
@@ -1069,6 +1132,12 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result, reason
     // リモート人間の指差しを適用
     if (ev.type === "point" && ev.actor === localSeat) {
       doPoint(localSeat, localTargets);
+      // バグ2修正: リモートのpointで次手番が自分（ローカル0）になる可能性があるため、
+      // このタイミング（通知受信時刻）を _pointRecvTime に記録する。
+      // doPoint後に round.event が更新され、actor===0なら受信時刻が期限計算に使われる
+      if (round.event && round.event.type === "point" && round.event.actor === 0) {
+        _pointRecvTime = audioCtx ? audioCtx.currentTime : 0;
+      }
       // 情報が届く前に保留していた自分の早押しを、本来のタップ時刻で判定する
       if (round.earlyInput) {
         const early = round.earlyInput;
@@ -1175,7 +1244,8 @@ function update() {
   if (ev.type === "point") {
     if (ev.actor === 0 && !(G.online && G.chars[0].kind === "cpu")) {
       // 自分（ローカル0番）の番: 時間切れ判定（死亡後=CPU代走中は下のCPU分岐が担当）
-      if (now > ev.t + win && !round.pendingKeys) {
+      // バグ2修正: selfDeadlineで受信遅延を考慮した期限を使う
+      if (now > selfDeadline(ev) && !round.pendingKeys) {
         reportSelfMiss("反応できなかった…");
       }
     } else if (G.online && G.humanSeats && G.humanSeats.includes(ev.actor)) {
@@ -1185,8 +1255,11 @@ function update() {
       G.waitNote = now > ev.t + 1.5
         ? seatDisplayName(ev.actor) + " の応答待ち…"
         : "";
-      // フェーズ3: 2.5秒超で stall_report を1回だけ送る（そのbeatにつき1回）
-      if (now > ev.t + 2.5 && round.stallReportedBeat !== ev.beat) {
+      // フェーズ3: stall_report はバグ2の猶予（MIN_RESPONSE_GRACE_RATIO + STALL_MARGIN）
+      // より長い時点で送る。100BPMでは 0.6*0.8+0.5=0.98秒→約1.5秒後が妥当
+      // stall_threshold = 拍間隔 * MIN_RESPONSE_GRACE_RATIO + STALL_MARGIN（最低2.5秒）
+      const stallThreshold = Math.max(2.5, round.interval * MIN_RESPONSE_GRACE_RATIO + STALL_MARGIN);
+      if (now > ev.t + stallThreshold && round.stallReportedBeat !== ev.beat) {
         round.stallReportedBeat = ev.beat;
         NET.sendStallReport(ev.beat, toAbs(ev.actor));
       }
@@ -1576,13 +1649,50 @@ canvas.addEventListener("mousedown", (e) => {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     ensureAudioRunning();
-    // スマホはタブを離れるとソケットが静かに死ぬことがある。
-    // 待機中に戻ってきたら先回りで張り直す
-    if (G.online && NET.wsMode && G.mode === "intro" && round && !round.event) {
-      NET.ensureConnected();
+    // バグ4修正: オンラインモード中はモードを問わず先回り再接続する。
+    // v=19 では待機中（intro+event無し）限定だったが、試合中・interlude中でも
+    // タブを離れるとソケットが死ぬため、全モードで確認・再接続する
+    if (G.online && NET.wsMode) {
+      _ensureWsAndResync();
     }
   }
 });
+
+// バグ4修正: WS接続を確認して切れていれば再接続・状態を再同期する共通処理
+function _ensureWsAndResync() {
+  if (!G.online || !NET.wsMode) return;
+  const wasConnected = NET.connected;
+  NET.ensureConnected(); // 切断していれば張り直す（joined受信でconnected=trueになる）
+  // 再接続後の状態同期は onLeave → _initWs → joined のフローで起動する。
+  // joined受信後に _wsResyncOnReconnect が呼ばれるよう事前にフラグを立てる
+  if (!wasConnected || !NET._transport || !NET._transport.ws ||
+      NET._transport.ws.readyState !== WebSocket.OPEN) {
+    NET._pendingResync = true; // joined受信時に同期処理を走らせる
+  }
+}
+
+// バグ4修正: 接続中表示が長引いた場合のウォッチドッグ（10秒）
+// 「接続中」表示のまま動かなくなった時の逃げ道を提供する
+let _connectingWatchdogTimer = null;
+
+function _startConnectingWatchdog() {
+  _clearConnectingWatchdog();
+  _connectingWatchdogTimer = setTimeout(function() {
+    // 10秒経ってもまだ「接続中」（introかつconnected=false）なら警告を出す
+    if (G.online && NET.wsMode && !NET.connected &&
+        G.mode === "intro" && round && !round.event) {
+      G.introText = "接続できません。タップでタイトルへ";
+      G.introSub = "";
+    }
+  }, 10000);
+}
+
+function _clearConnectingWatchdog() {
+  if (_connectingWatchdogTimer) {
+    clearTimeout(_connectingWatchdogTimer);
+    _connectingWatchdogTimer = null;
+  }
+}
 
 // タブを閉じた・別ページへ移動したときも退出を通知する
 window.addEventListener("pagehide", () => {

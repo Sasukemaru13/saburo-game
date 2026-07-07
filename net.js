@@ -254,6 +254,26 @@ const NET = {
     this._transport.onMessage(this._handleMessage.bind(this));
     this._transport.onClose(function() {
       NET.connected = false;
+      // バグ4修正: 試合中・interlude中の切断はgameOverにせず自動再接続を試みる。
+      // onLeave(-1) をゲームへ通知するのは「待機中の切断」と「再接続失敗」の場合だけ。
+      // 試合中（play/interlude）なら _ensureWsAndResync 相当の再接続を即試みる
+      if (typeof G !== "undefined" &&
+          (G.mode === "play" || G.mode === "interlude")) {
+        // 試合中の切断: 少し待ってから再接続（バックオフは_wsRetryで管理）
+        if (typeof G._wsRetry === "undefined") G._wsRetry = 0;
+        G._wsRetry++;
+        if (G._wsRetry <= 5) {
+          const delay = 300 * G._wsRetry;
+          setTimeout(function() {
+            if (G.online && NET.wsMode && !NET.connected) {
+              NET._pendingResync = true;
+              NET.ensureConnected();
+            }
+          }, delay);
+          return; // onLeave は呼ばない（ゲーム継続）
+        }
+        // 5回失敗したら諦めてgameOverへ
+      }
       if (NET._onLeaveCb) {
         // 接続断をゲームへ通知（seat=-1 で「サーバー切断」を表す）
         NET._onLeaveCb(-1);
@@ -425,6 +445,16 @@ const NET = {
     this._transport.send({ type: "stall_report", beat: beat, actor: actorAbs });
   },
 
+  // バグ3修正: miss_decl 送信（自分のミスをサーバー裁定のためにWSモードで送る）
+  // サーバーが先着1件だけを採用して全員に中継する。localモードは no-op（同一マシン）
+  // reason: ミスの理由文（「早すぎた！」等。他画面のmissReason表示に使う）
+  sendMissDecl: function(beat, actorAbs, reason) {
+    if (!this.online || !this.wsMode || !this._transport) return;
+    const msg = { type: "miss_decl_req", beat: beat, actor: actorAbs };
+    if (reason) msg.reason = reason;
+    this._transport.send(msg);
+  },
+
   // match_end 送信（勝敗確定時。WSモード専用）
   // localモードは no-op（同一マシン内でズレが起きないため不要）
   sendMatchEnd: function(winnerAbs) {
@@ -479,6 +509,36 @@ const NET = {
       this._startClockSync();
       // roster 相当の初期メンバー通知
       if (this._onRosterCb && msg.players) this._onRosterCb(msg.players);
+      // バグ4修正: 再接続後の状態同期（_ensureWsAndResync がフラグを立てた場合）
+      if (this._pendingResync) {
+        this._pendingResync = false;
+        // ゲーム中・interlude中だったなら resume_req を送って状態を再同期する
+        if (typeof G !== "undefined") {
+          if (G.online && (G.mode === "play" || G.mode === "interlude")) {
+            // ライフを絶対席順に並べてresume_reqで送信し、サーバーから現在の状態を受け取る
+            const livesAbs = [0, 0, 0, 0];
+            if (typeof toAbs === "function") {
+              for (let local = 0; local < 4; local++) {
+                livesAbs[toAbs(local)] = (G.lives && G.lives[local]) || 0;
+              }
+            }
+            // resume_req は last_miss_seat チェックがあるため通らない場合がある。
+            // 代わりに ready を送り直し、次の試合から参加する（フォールバック）
+            this.sendReady("normal");
+            // 「接続中」テキストを更新
+            if (G.mode === "interlude") {
+              // interlude中は resumeSeat=0 の人だけリスタート指示を維持
+            } else {
+              G.introText = "再接続しました";
+              G.introSub = "次の試合から参加できます";
+            }
+          } else if (G.online && G.mode === "intro" && typeof round !== "undefined" &&
+                     round && !round.event) {
+            // 待機中だったなら ready を送り直す
+            this.sendReady("normal");
+          }
+        }
+      }
     } else if (msg.type === "roster") {
       this.lastPlayers = msg.players || null;
       if (msg.inProgress !== undefined) this.inProgress = !!msg.inProgress;
