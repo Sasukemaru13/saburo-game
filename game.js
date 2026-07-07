@@ -1342,6 +1342,17 @@ function winNow() {
 const MIN_RESPONSE_GRACE_RATIO = 0.8;
 // STALL_MARGIN: stall_reportを猶予終了後に余裕を持って送るための追加マージン（秒）
 const STALL_MARGIN = 0.5;
+// ── 判定緩和の調整定数（2026-07-08 実地フィードバック。ゲーム性を守る枠内で緩める）──
+// 早入力側の窓の倍率。プレイヤーは拍でなく「さされた瞬間」に反応してタップしがちで、
+// 対称窓だと「早すぎた！」が頻発するため、早い側だけ広げる（遅い側は従来のまま＝
+// リズムに合わせる緊張感を保つ）
+const EARLY_WINDOW_RATIO = 1.4;
+// 遅延補正の猶予の下限（秒）。テンポが上がると拍間隔×80%が人間の反応時間を下回る
+const MIN_RESPONSE_GRACE_FLOOR = 0.35;
+// 遅延補正の上限: 拍間隔×1.5 か 0.9秒 の大きい方まで。無制限に伸ばすとチートと
+// 観戦者の待ち時間の温床になるため、ここで必ず打ち切る
+const LATE_CAP_RATIO = 1.5;
+const LATE_CAP_FLOOR = 0.9;
 
 // さされた（point手番が自分に来た）通知の受信時刻を記録する。
 // handleRemoteInput で相手の「point → 自分さし」が確定したタイミングで呼ぶ
@@ -1350,11 +1361,12 @@ let _pointRecvTime = 0; // audioCtx.currentTime 基準（秒）
 // 自分の応答期限を返す。通常は共有拍基準の期限を返し、
 // 受信が遅れた場合は猶予を加算した値にする（上限は共有拍基準+1拍）
 function selfDeadline(ev) {
-  const grace = round.interval * MIN_RESPONSE_GRACE_RATIO;
+  // 猶予は「拍間隔の80%」と「人間の反応時間の下限0.35秒」の大きい方
+  const grace = Math.max(round.interval * MIN_RESPONSE_GRACE_RATIO, MIN_RESPONSE_GRACE_FLOOR);
   const graceDeadline = _pointRecvTime + grace;
   const beatDeadline = ev.t + winNow();
-  // 上限: 共有拍基準 + 1拍（無限に伸ばさない）
-  const cap = ev.t + round.interval;
+  // 上限: 拍間隔×1.5 か 0.9秒 の大きい方（通知が1拍以上遅れても最低限の反応時間を確保）
+  const cap = ev.t + Math.max(round.interval * LATE_CAP_RATIO, LATE_CAP_FLOOR);
   return Math.min(cap, Math.max(beatDeadline, graceDeadline));
 }
 
@@ -1458,9 +1470,18 @@ function resolvePlayerPoint() {
   const ev = round.event;
   if (ev.type !== "point" || ev.actor !== 0) return;
 
-  if (Math.abs(t - ev.t) > winNow()) {
-    reportSelfMiss(t < ev.t ? "早すぎた！" : "遅すぎた！");
-    return;
+  // 早い側は窓を1.4倍に緩和・遅い側は「拍窓」か「通知遅延の猶予」のどちらかに収まればOK
+  {
+    const dt = t - ev.t;
+    const win = winNow();
+    if (dt < -win * EARLY_WINDOW_RATIO) {
+      reportSelfMiss("早すぎた！");
+      return;
+    }
+    if (dt > win && t > selfDeadline(ev)) {
+      reportSelfMiss("遅すぎた！");
+      return;
+    }
   }
   if (keys.length === 2 && round.consec[0] >= 2) {
     reportSelfMiss("同時さしは連続2回まで！");
@@ -1476,9 +1497,18 @@ function resolvePlayerPoint() {
 
 function resolvePlayerHaihai(t) {
   const ev = round.event;
-  if (Math.abs(t - ev.t) > winNow()) {
-    reportSelfMiss(t < ev.t ? "ハイハイが早すぎた！" : "ハイハイが遅すぎた！");
-    return;
+  // 指差しと同じ緩和: 早い側1.4倍・遅い側は拍窓か通知遅延の猶予のどちらかでOK
+  {
+    const dt = t - ev.t;
+    const win = winNow();
+    if (dt < -win * EARLY_WINDOW_RATIO) {
+      reportSelfMiss("ハイハイが早すぎた！");
+      return;
+    }
+    if (dt > win && t > selfDeadline(ev)) {
+      reportSelfMiss("ハイハイが遅すぎた！");
+      return;
+    }
   }
   playVoice("haihai", G.chars[0].pitch);
   G.chars[0].anim = { type: "haihai", start: audioCtx.currentTime, until: ev.t + round.interval * 0.9 };
@@ -1517,8 +1547,11 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result, reason
       doPoint(localSeat, localTargets);
       // バグ2修正: リモートのpointで次手番が自分（ローカル0）になる可能性があるため、
       // このタイミング（通知受信時刻）を _pointRecvTime に記録する。
-      // doPoint後に round.event が更新され、actor===0なら受信時刻が期限計算に使われる
-      if (round.event && round.event.type === "point" && round.event.actor === 0) {
+      // doPoint後に round.event が更新され、自分の応答（指し返し or ハイハイ）が
+      // 要る場合は受信時刻が期限計算に使われる
+      if (round.event &&
+          ((round.event.type === "point" && round.event.actor === 0) ||
+           (round.event.type === "haihai" && round.event.actors && round.event.actors.includes(0)))) {
         _pointRecvTime = audioCtx ? audioCtx.currentTime : 0;
       }
       // 情報が届く前に保留していた自分の早押しを、本来のタップ時刻で判定する
@@ -1689,7 +1722,8 @@ function update() {
             }
           }
         }
-      } else {
+      } else if (now > selfDeadline(ev)) {
+        // 通知が遅れて届いた場合は受信時刻ベースの猶予まで待つ（指差しと同じ緩和）
         reportSelfMiss("ハイハイできなかった…");
         return;
       }
