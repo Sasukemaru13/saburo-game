@@ -421,6 +421,17 @@ async function startRound() {
     NET.onInput(handleRemoteInput);
     NET.onResume(function(msg) { handleResume(msg.t0, msg.actor, msg.lives); });
     NET.onLeave(function(seat) {
+      // タイトル表示中の切断は黙って張り直す（在室者一覧・入室状態を保つ）。
+      // タブ切替はvisibilitychange側が拾うが、表示中の回線切れはここが唯一の再接続経路
+      if (G.mode === "title" && seat === -1) {
+        G._wsRetry = (G._wsRetry || 0) + 1;
+        if (G._wsRetry <= 5) {
+          setTimeout(function() {
+            if (G.online && NET.wsMode && !NET.connected) NET.ensureConnected();
+          }, 300 * G._wsRetry);
+        }
+        return;
+      }
       // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
       if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
         if (seat === -1) {
@@ -557,17 +568,24 @@ async function startRound() {
         }
         // フェーズ3: 試合中（inProgress）なら「試合中・終了待ち」を補足に出す
         if (NET.inProgress) {
-          G.introText = "参加者 " + humanCount + " 人";
-          G.introSub = "試合中・終了待ち";
+          G.introText = "いま試合中です";
+          G.introSub = "試合が終わると参加できます";
           return;
         }
+        // 「何が起きていて・何を待っているか」を具体的に出す（2026-07-08 実地フィードバック）
         // メイン行は短く保ち、補足はintroSub（下の小さい行）に分ける
         if (humanCount >= 2) {
-          G.introText = "スタート済み " + readyCount + "/" + humanCount + " 人";
-          G.introSub = "全員が押すと開始";
+          // まだお辞儀していない人の名前を出す（誰待ちかを見えるように）
+          const waitingNames = list
+            .filter(function(p) { return p.kind === "human" && !p.ready; })
+            .map(function(p) { return (p.name || "?").slice(0, 8); });
+          G.introText = "お辞儀した人 " + readyCount + "/" + humanCount;
+          G.introSub = waitingNames.length > 0
+            ? waitingNames.join("・") + " のお辞儀を待っています"
+            : "まもなく開始！";
         } else {
-          G.introText = "参加者 " + humanCount + " 人";
-          G.introSub = "相手の入室待ち…";
+          G.introText = "部屋にいるのはあなただけ";
+          G.introSub = "対戦相手の入室を待っています…";
         }
       };
       NET.onRoster(updateWaitingText);
