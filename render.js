@@ -899,18 +899,20 @@ function drawRanking(G, now) {
       const nameStr = (entry.name || "？").slice(0, 12);
       ctx.fillText(nameStr, 100, ey + 25);
 
-      // スコア
-      ctx.fillStyle = isMe ? "#ffd95e" : "#ffffff";
-      ctx.font = F(18, 800);
+      // スコアと日付（右カラムに縦積み・重なり防止）
       ctx.textAlign = "right";
-      ctx.fillText(entry.score + " 点", 388, ey + 25);
-
-      // 日付（小さく）
       if (entry.date) {
+        ctx.fillStyle = isMe ? "#ffd95e" : "#ffffff";
+        ctx.font = F(17, 800);
+        ctx.fillText(entry.score + " 点", 414, ey + 19);
         const dateStr = String(entry.date).slice(0, 10);
         ctx.fillStyle = "#6a7090";
-        ctx.font = F(11, 700);
-        ctx.fillText(dateStr, 424, ey + 25);
+        ctx.font = F(10.5, 700);
+        ctx.fillText(dateStr, 414, ey + 33);
+      } else {
+        ctx.fillStyle = isMe ? "#ffd95e" : "#ffffff";
+        ctx.font = F(18, 800);
+        ctx.fillText(entry.score + " 点", 414, ey + 25);
       }
     }
   }
@@ -1148,6 +1150,18 @@ function drawSpeedup(G) {
 // ---------- オンライン: 名前ラベル＋ライフ表示 ----------
 // 各キャラの頭上に名前（将来はDiscord名が入る）とライフ（残り数ぶんの点）を描く
 
+// ハート形のパスを (cx, cy) 中心・高さ約 size で作る（fillは呼び出し側）
+function heartPath(cx, cy, size) {
+  const top = cy - size * 0.42;
+  ctx.beginPath();
+  ctx.moveTo(cx, top + size * 0.3);
+  ctx.bezierCurveTo(cx, top, cx - size / 2, top, cx - size / 2, top + size * 0.3);
+  ctx.bezierCurveTo(cx - size / 2, top + size * 0.58, cx, top + size * 0.74, cx, top + size);
+  ctx.bezierCurveTo(cx, top + size * 0.74, cx + size / 2, top + size * 0.58, cx + size / 2, top + size * 0.3);
+  ctx.bezierCurveTo(cx + size / 2, top, cx, top, cx, top + size * 0.3);
+  ctx.closePath();
+}
+
 function drawSeatLabel(G, local, x, y, s) {
   const ch = G.chars[local];
   if (!ch) return;
@@ -1166,12 +1180,11 @@ function drawSeatLabel(G, local, x, y, s) {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(ch.name, x, y - 1);
-  // ライフ（人間のみ・残り数ぶんの点。死亡は「代走中」）
+  // ライフ（人間のみ・残り数ぶんのハート。死亡は「代走中」）
   if (G.lives && isHuman) {
     const lives = G.lives[local];
     for (let k = 0; k < 3; k++) {
-      ctx.beginPath();
-      ctx.arc(x - 14 + k * 14, y + 17, 4.5, 0, Math.PI * 2);
+      heartPath(x - 14 + k * 14, y + 18, 11);
       ctx.fillStyle = k < lives ? "#ff6f7d" : "rgba(255,255,255,0.18)";
       ctx.fill();
     }
