@@ -708,12 +708,19 @@ function drawTitle(G, now) {
   ctx.shadowBlur = 0;
   ctx.shadowColor = "transparent";
   ctx.fillStyle = "#2a2520";
-  fillTextFit("お辞儀する（START）", 0, 9, 24, 800, s.w - 24);
+  // オンラインで試合中なら「観戦する」、それ以外は従来どおり「お辞儀する（START）」
+  const startLabel = (G.online && NET.wsMode && NET.connected && NET.inProgress)
+    ? "観戦する"
+    : "お辞儀する（START）";
+  fillTextFit(startLabel, 0, 9, 24, 800, s.w - 24);
   ctx.restore();
   if (!IS_TOUCH) {
     ctx.fillStyle = "#9aa3c0";
     ctx.font = F(13);
-    ctx.fillText("Space でもお辞儀する", 240, s.y + s.h + 24);
+    const hint = (G.online && NET.wsMode && NET.connected && NET.inProgress)
+      ? "Space でも観戦する"
+      : "Space でもお辞儀する";
+    ctx.fillText(hint, 240, s.y + s.h + 24);
   }
 
   // あそびかた（小さく）
@@ -1205,6 +1212,28 @@ function drawOnlineBadges(G) {
   drawSeatLabel(G, 0, 240, 590, 1);
 }
 
+// 観戦中バッジ。画面上部に小さく「観戦中」＋退出ヒントを出す
+function drawSpectateBadge(G) {
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.shadowColor = "rgba(0,0,0,0.5)";
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = "rgba(38, 43, 61, 0.92)";
+  rrect(180, 20, 120, 30, 10);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowColor = "transparent";
+  ctx.fillStyle = "#ffaa44";
+  ctx.font = F(15, 800);
+  ctx.fillText("● 観戦中", 240, 36);
+  ctx.fillStyle = "rgba(154, 163, 192, 0.85)";
+  ctx.font = F(12);
+  ctx.fillText(IS_TOUCH ? "タップでタイトルへ" : "T でタイトルへ", 240, 60);
+  ctx.textBaseline = "alphabetic";
+  ctx.restore();
+}
+
 // メイン描画。game.js から毎フレーム呼ばれる
 function render(G, now) {
   if (G.mode === "title") {
@@ -1254,6 +1283,9 @@ function render(G, now) {
   if (G.mode === "intro") drawIntro(G);
   if (G.mode === "interlude") drawInterlude(G);
   if (G.mode === "gameover") drawGameOver(G);
+
+  // 観戦中バッジ（画面上部・小さく）。ゲームオーバー画面では出さない
+  if (G.spectating && G.mode !== "gameover") drawSpectateBadge(G);
 
   // 音声時計が止まっている（iOSのsuspended）ときはタップを促す
   if (G.audioStalled && G.mode !== "gameover") {

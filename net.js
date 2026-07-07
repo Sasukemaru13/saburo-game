@@ -201,6 +201,7 @@ const NET = {
   _onRosterCb: null,      // roster/joined 受信時（待機画面の人数表示用）
   _onMissDeclCb: null,    // miss_decl 受信時（フェーズ3）
   _onMatchEndCb: null,    // match_end 受信時（フェーズ3）
+  _onSpectateInitCb: null, // spectate_init 受信時（フェーズ5・観戦）
 
   // ready 待ち合わせ（localモード専用）
   readySeats: {},
@@ -472,6 +473,17 @@ const NET = {
     this._onMatchEndCb = cb;
   },
 
+  // フェーズ5: 観戦リクエスト送信（WSモード専用）。サーバーが spectate_init を返す
+  sendSpectateReq: function() {
+    if (!this.online || !this.wsMode || !this._transport) return;
+    this._transport.send({ type: "spectate_req" });
+  },
+
+  // spectate_init 受信コールバック登録（cb(events)）
+  onSpectateInit: function(cb) {
+    this._onSpectateInitCb = cb;
+  },
+
   // 退出通知
   sendLeave: function() {
     if (!this.online || !this._transport) return;
@@ -543,6 +555,9 @@ const NET = {
     } else if (msg.type === "match_end") {
       // フェーズ3: 試合終了の再配布
       if (this._onMatchEndCb) this._onMatchEndCb(msg.winner);
+    } else if (msg.type === "spectate_init") {
+      // フェーズ5: 観戦の記録（start+入力列）。空配列なら観戦対象なし
+      if (this._onSpectateInitCb) this._onSpectateInitCb(msg.events || []);
     } else if (msg.type === "pong") {
       this._handlePong(msg);
     } else if (msg.type === "start") {

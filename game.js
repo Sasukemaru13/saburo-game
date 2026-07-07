@@ -99,6 +99,7 @@ const G = {
   rankingList: null,     // 1人用ゲームオーバー時の上位5件（fetch成功時のみ）
   _memberOfMatch: true,  // フェーズ3: start受信時に自分が players に含まれていれば true
   rankingScreen: null,   // タイトルのランキング画面データ { list, difficulty, state:"loading"|"ok"|"error" }
+  spectating: false,     // フェーズ5: 観戦中か（入力・判定・申告を一切通さない）
 };
 
 // ---------- 音声 ----------
@@ -262,6 +263,7 @@ function dbg(name, when) {
 }
 
 function playVoice(name, pitch, when = 0, vol = 1.0) {
+  if (audioMuted()) return; // 観戦リプレイ中は鳴らさない
   dbg("voice:" + name, Math.max(when, audioCtx.currentTime));
   const src = audioCtx.createBufferSource();
   src.buffer = buffers[name];
@@ -273,6 +275,7 @@ function playVoice(name, pitch, when = 0, vol = 1.0) {
 }
 
 function playClap(when, vol = 0.5) {
+  if (audioMuted()) return; // 観戦リプレイ中は鳴らさない
   dbg("clap", when);
   const src = audioCtx.createBufferSource();
   src.buffer = clapBuffer;
@@ -287,6 +290,7 @@ function playClap(when, vol = 0.5) {
 }
 
 function playTick(when) {
+  if (audioMuted()) return; // 観戦リプレイ中は鳴らさない
   dbg("tick", when);
   const src = audioCtx.createBufferSource();
   src.buffer = tickBuffer;
@@ -297,6 +301,7 @@ function playTick(when) {
 }
 
 function playBuzzer() {
+  if (audioMuted()) return; // 観戦リプレイ中は鳴らさない
   const osc = audioCtx.createOscillator();
   osc.type = "square";
   osc.frequency.value = 110;
@@ -309,12 +314,224 @@ function playBuzzer() {
   osc.stop(t + 0.6);
 }
 
+// ---------- ゲーム進行時刻（gameNow） ----------
+// 進行判定（update・拍進行・期限判定・アニメ進行）が使う「現在時刻」の集約点。
+// 通常は audioCtx.currentTime をそのまま返す（従来と完全に同一）。
+// 観戦リプレイ中（SPEC.replaying）は「加速した仮想時刻」を返し、既存の update()
+// ロジックをそのまま速回しして決定論リプレイを実現する。
+// 注意: 音声再生の時刻指定（playX の when）はここを通さない。リプレイ中は音を
+// ミュートするので、音声側は従来どおり audioCtx.currentTime のままでよい。
+function gameNow() {
+  if (SPEC.replaying) return SPEC.vnow;
+  return audioCtx ? audioCtx.currentTime : 0;
+}
+
+// ---------- 観戦（spectate）状態 ----------
+// replaying:   spectate_init の記録を仮想時刻で速回し中か
+// vnow:        リプレイ用の仮想時刻（audioCtx.currentTime と同じ座標系＝秒）
+// queue:       未適用のリプレイイベント（start を除く input/miss_decl/resume）
+// muted:       リプレイ中の音ミュート（追いついたら false に戻してライブ音を出す）
+// targetNow:   追いつきの目標時刻（現在のサーバー同期時刻をローカル座標に変換した値）
+const SPEC = {
+  replaying: false,
+  vnow: 0,
+  queue: [],
+  muted: false,
+  targetNow: 0,
+  // リプレイ用の凍結アンカー: 観戦開始時の (audioCtx.currentTime, サーバー時刻ms)。
+  // サーバー時刻ms → 仮想座標(秒) の変換をこのアンカー基準で固定する。
+  // 実クロックが進んでも変換が一定になり、resume の t0 も vnow と同じ座標に落ちる。
+  anchorAudio: 0,
+  anchorServerMs: 0,
+};
+
+// サーバー時刻(ms) → 仮想座標(秒)。凍結アンカー基準（リプレイ中の唯一の正しい変換）。
+// vnow・round.t0・resume の t0 はすべてこの座標で揃う。
+function replayServerMsToLocal(ms) {
+  return SPEC.anchorAudio + (ms - SPEC.anchorServerMs) / 1000;
+}
+
+// リプレイ中は音を出さない。playX 系の頭で呼んで早期returnする
+function audioMuted() {
+  return SPEC.muted;
+}
+
 // ---------- ラウンド進行 ----------
 // イベントは絶対時刻 t を持つ。テンポが上がっても次イベントは「前イベント + 今のinterval」。
 
 let round = null;
 
 let startingRound = false;
+
+// 試合中の各メッセージ（start/input/resume/leave/miss_decl/match_end）の受信
+// コールバックを NET に登録する。startRound（当事者）と観戦フロー（合流後）で共有する。
+// NET.onX は上書き式なので再登録は無害。
+function registerMatchCallbacks() {
+    // start コールバックは1本に統合する（onStartは上書き式なので二重登録禁止）。
+    // ホスト自身も broadcastStart 経由でここを通る
+    NET.onStart(function(msg) {
+      // 自分がスタート待ち状態のときだけ受け付ける（ゲームオーバー画面等での誤発動防止）。
+      // 観戦リプレイの開始（startSpectate）もここを intro 状態で通す
+      if (G.mode !== "intro") return;
+      // すでに試合が組まれている（armRound済み）なら二発目のstartは無視する。
+      // ready再送が開始と行き違うとサーバーが二重にstartを配ることがあり、
+      // これを受けるとイントロ中に試合が組み直されて「勝手にスタート」に見える
+      if (round && round.event) return;
+      // 難易度は常に "normal" 固定（UIを廃止してふつう固定にしたため）
+      G.difficulty = "normal";
+      G.diff = DIFFICULTIES.normal;
+      round.interval = 60 / G.diff.bpm;
+      G.bpmNow = G.diff.bpm;
+      if (msg.players) {
+        G.players = msg.players;
+        G.humanSeats = msg.players
+          .filter(function(p) { return p.kind === "human"; })
+          .map(function(p) { return toLocal(p.seat); });
+        G.chars = makeChars(G.players);
+      }
+
+      // フェーズ3: 自分が試合メンバーに含まれているか確認する
+      // start の players に自分の絶対席が human として入っていなければ「試合メンバー外」。
+      // 観戦中は常にメンバー外扱い（席は持つが in_match ではない）
+      const selfInMatch = G.spectating
+        ? false
+        : (msg.players
+          ? msg.players.some(function(p) { return p.seat === NET.mySeat && p.kind === "human"; })
+          : true); // players がない（localモード等）なら参加とみなす
+      G._memberOfMatch = selfInMatch;
+
+      if (!selfInMatch && !G.spectating) {
+        // 試合メンバー外（かつ非観戦）: ready 再送タイマーを止めて待機継続
+        if (G._readyTimer) {
+          clearInterval(G._readyTimer);
+          G._readyTimer = null;
+        }
+        G.introText = "試合が始まりました（次の試合から参加できます）";
+        G.introSub = "";
+        // armRound せず待機のまま。match_end で待機テキストを戻す
+        return;
+      }
+
+      if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
+      // msg.t0 はサーバー時刻（ms）。audioCtx.currentTime はタブごとに独立した時計なので
+      // サーバー時刻基準でローカル音声時計に変換する。
+      // localモードでは NET.serverNowMs() ≒ performance.now() ≒ Date.now() - epoch差 なので
+      // 差分が同符号になり実質的に従来の Date.now() と同じ精度で動く。
+      const _nowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
+      const t0Local = audioCtx.currentTime + (msg.t0 - _nowMs) / 1000;
+      if (t0Local < audioCtx.currentTime + 0.2 && !G.spectating) {
+        console.warn("saburo: start時刻が過去/直近すぎる (受信遅れ?)", msg.t0, t0Local);
+      }
+      armRound(t0Local);
+    });
+
+    NET.onInput(handleRemoteInput);
+    NET.onResume(function(msg) { handleResume(msg.t0, msg.actor, msg.lives); });
+    NET.onLeave(function(seat) {
+      // タイトル表示中の切断は黙って張り直す（在室者一覧・入室状態を保つ）。
+      // タブ切替はvisibilitychange側が拾うが、表示中の回線切れはここが唯一の再接続経路
+      if (G.mode === "title" && seat === -1) {
+        G._wsRetry = (G._wsRetry || 0) + 1;
+        if (G._wsRetry <= 5) {
+          setTimeout(function() {
+            if (G.online && NET.wsMode && !NET.connected) NET.ensureConnected();
+          }, 300 * G._wsRetry);
+        }
+        return;
+      }
+      // 観戦中の切断: 試合を打ち切らず観戦を解いて待機へ戻す（自分は当事者ではない）
+      if (G.spectating && seat === -1) {
+        exitSpectate();
+        gameOver("観戦していた試合との接続が切れました");
+        return;
+      }
+      // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
+      if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
+        if (seat === -1) {
+          // 開始前の待機中の切断は黙って張り直す（スマホがタブを離れると
+          // ソケットが静かに死に、スタート直後に切断通知が届くことがある）。
+          // 張り直しが続く場合だけ諦めて知らせる
+          if (G.mode === "intro" && round && !round.event) {
+            G._wsRetry = (G._wsRetry || 0) + 1;
+            if (G._wsRetry <= 5) {
+              G.introText = "接続中…";
+              setTimeout(function() { NET.ensureConnected(); }, 300 * G._wsRetry);
+              return;
+            }
+          }
+          gameOver("サーバーとの接続が切れました");
+        } else if (seat === -2) {
+          gameOver("部屋が満員です");
+        } else {
+          // 自分の試合がまだ始まっていない（開始前の待機中）なら、他人の退出は
+          // 打ち切り対象ではない。人数表示（roster）の更新に任せて無視する
+          if (!round || !round.event) return;
+          const local = toLocal(seat);
+          const name = seatDisplayName(local);
+          gameOver(name + " が退出しました");
+        }
+      }
+    });
+
+    // フェーズ3: サーバー公式ミス宣言（バグ3修正で同時ミス裁定にも使う）
+    // サーバーが採用した1件だけが全員に届く。楽観適用したものと食い違う場合はリコンサイル
+    NET.onMissDecl(function(absSeat, beat, reason) {
+      const localSeat = toLocal(absSeat);
+      const key = beat + ":" + localSeat;
+      // すでに同一beat:seatのミスを処理済みなら重複適用しない（楽観適用と一致した場合）
+      if (G._missApplied && G._missApplied.has(key)) return;
+      // 別人のミスがサーバーから届いた場合（楽観適用した自分のミスを巻き戻す必要あり）:
+      // 自分が既にinterludeに入っていて別beatのリコンサイルが必要なケースを検出する。
+      // 観戦中は自分の楽観適用がないのでリコンサイル不要
+      const myKey = beat + ":0"; // 自分のローカル席は常に0
+      if (!G.spectating && G._lastMissKey === myKey && localSeat !== 0) {
+        // 自分のミスを楽観適用済みだが、サーバーは別人を採用 → 自分のミスを取り消して
+        // 別人のミスで上書きする（interlude表示・resumeSeat・ライフ減を再設定）
+        G._lastMissKey = null; // 重複防止キーをリセットして下の handleMiss を通す
+        // ライフを +1 して楽観適用分を戻す（死亡判定も取り消し）
+        G.lives[0] = Math.min(3, G.lives[0] + 1);
+        if (G.chars[0] && G.chars[0].kind === "cpu") {
+          // CPU化を戻す（まだ生きていた）
+          G.chars[0].kind = "human";
+          if (!G.humanSeats.includes(0)) G.humanSeats.push(0);
+        }
+      }
+      handleMiss(localSeat, reason || "反応できなかった…（時間切れ）", beat);
+    });
+
+    // フェーズ3: 試合終了の再配布（自分が送ったものも返ってくる）
+    NET.onMatchEnd(function(winner) {
+      if (G.mode === "gameover") return; // すでに終了済みなら無視
+      // 観戦中の match_end: 観戦を解いて通常の待機画面（お辞儀待ち）に戻す
+      if (G.spectating) {
+        exitSpectate();
+        const reason = winner >= 0
+          ? seatDisplayName(toLocal(winner)) + " の勝ち！"
+          : "引き分け…";
+        gameOver(reason);
+        NET.inProgress = false;
+        return;
+      }
+      if (G.mode === "play" || G.mode === "interlude" || G.mode === "intro") {
+        const reason = winner >= 0
+          ? seatDisplayName(toLocal(winner)) + " の勝ち！"
+          : "引き分け…";
+        gameOver(reason);
+      }
+      // 試合メンバー外で待機中だった場合: 待機テキストを通常に戻す
+      if (!G._memberOfMatch) {
+        G._memberOfMatch = true;
+        if (G.mode === "intro" && round && !round.event) {
+          // updateWaitingText は WSモードなので roster が来た時に更新されるが
+          // match_end 直後は roster が届く前に文言が stale になるため暫定で更新する
+          G.introText = "参加待ち…";
+          G.introSub = "次の試合から参加できます";
+        }
+      }
+      // inProgress フラグを折る
+      NET.inProgress = false;
+    });
+}
 
 async function startRound() {
   if (startingRound) return; // 連打・タップとキーの二重スタート防止
@@ -364,149 +581,9 @@ async function startRound() {
     // オンライン時は awaitingClock フラグを使わず、NET の start コールバックで armRound を呼ぶ
     round.awaitingClock = false;
 
-    // start コールバックは1本に統合する（onStartは上書き式なので二重登録禁止）。
-    // ホスト自身も broadcastStart 経由でここを通る
-    NET.onStart(function(msg) {
-      // 自分がスタート待ち状態のときだけ受け付ける（ゲームオーバー画面等での誤発動防止）
-      if (G.mode !== "intro") return;
-      // すでに試合が組まれている（armRound済み）なら二発目のstartは無視する。
-      // ready再送が開始と行き違うとサーバーが二重にstartを配ることがあり、
-      // これを受けるとイントロ中に試合が組み直されて「勝手にスタート」に見える
-      if (round && round.event) return;
-      // 難易度は常に "normal" 固定（UIを廃止してふつう固定にしたため）
-      G.difficulty = "normal";
-      G.diff = DIFFICULTIES.normal;
-      round.interval = 60 / G.diff.bpm;
-      G.bpmNow = G.diff.bpm;
-      if (msg.players) {
-        G.players = msg.players;
-        G.humanSeats = msg.players
-          .filter(function(p) { return p.kind === "human"; })
-          .map(function(p) { return toLocal(p.seat); });
-        G.chars = makeChars(G.players);
-      }
-
-      // フェーズ3: 自分が試合メンバーに含まれているか確認する
-      // start の players に自分の絶対席が human として入っていなければ「試合メンバー外」
-      const selfInMatch = msg.players
-        ? msg.players.some(function(p) { return p.seat === NET.mySeat && p.kind === "human"; })
-        : true; // players がない（localモード等）なら参加とみなす
-      G._memberOfMatch = selfInMatch;
-
-      if (!selfInMatch) {
-        // 試合メンバー外: ready 再送タイマーを止めて待機継続
-        if (G._readyTimer) {
-          clearInterval(G._readyTimer);
-          G._readyTimer = null;
-        }
-        G.introText = "試合が始まりました（次の試合から参加できます）";
-        G.introSub = "";
-        // armRound せず待機のまま。match_end で待機テキストを戻す
-        return;
-      }
-
-      if (audioCtx.state !== "running") audioCtx.resume().catch(function() {});
-      // msg.t0 はサーバー時刻（ms）。audioCtx.currentTime はタブごとに独立した時計なので
-      // サーバー時刻基準でローカル音声時計に変換する。
-      // localモードでは NET.serverNowMs() ≒ performance.now() ≒ Date.now() - epoch差 なので
-      // 差分が同符号になり実質的に従来の Date.now() と同じ精度で動く。
-      const _nowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
-      const t0Local = audioCtx.currentTime + (msg.t0 - _nowMs) / 1000;
-      if (t0Local < audioCtx.currentTime + 0.2) {
-        console.warn("saburo: start時刻が過去/直近すぎる (受信遅れ?)", msg.t0, t0Local);
-      }
-      armRound(t0Local);
-    });
-
-    NET.onInput(handleRemoteInput);
-    NET.onResume(function(msg) { handleResume(msg.t0, msg.actor, msg.lives); });
-    NET.onLeave(function(seat) {
-      // タイトル表示中の切断は黙って張り直す（在室者一覧・入室状態を保つ）。
-      // タブ切替はvisibilitychange側が拾うが、表示中の回線切れはここが唯一の再接続経路
-      if (G.mode === "title" && seat === -1) {
-        G._wsRetry = (G._wsRetry || 0) + 1;
-        if (G._wsRetry <= 5) {
-          setTimeout(function() {
-            if (G.online && NET.wsMode && !NET.connected) NET.ensureConnected();
-          }, 300 * G._wsRetry);
-        }
-        return;
-      }
-      // 進行中・待機中なら試合を打ち切る（すでに終了画面なら何もしない）
-      if (G.mode === "intro" || G.mode === "play" || G.mode === "interlude") {
-        if (seat === -1) {
-          // 開始前の待機中の切断は黙って張り直す（スマホがタブを離れると
-          // ソケットが静かに死に、スタート直後に切断通知が届くことがある）。
-          // 張り直しが続く場合だけ諦めて知らせる
-          if (G.mode === "intro" && round && !round.event) {
-            G._wsRetry = (G._wsRetry || 0) + 1;
-            if (G._wsRetry <= 5) {
-              G.introText = "接続中…";
-              setTimeout(function() { NET.ensureConnected(); }, 300 * G._wsRetry);
-              return;
-            }
-          }
-          gameOver("サーバーとの接続が切れました");
-        } else if (seat === -2) {
-          gameOver("部屋が満員です");
-        } else {
-          // 自分の試合がまだ始まっていない（開始前の待機中）なら、他人の退出は
-          // 打ち切り対象ではない。人数表示（roster）の更新に任せて無視する
-          if (!round || !round.event) return;
-          const local = toLocal(seat);
-          const name = seatDisplayName(local);
-          gameOver(name + " が退出しました");
-        }
-      }
-    });
-
-    // フェーズ3: サーバー公式ミス宣言（バグ3修正で同時ミス裁定にも使う）
-    // サーバーが採用した1件だけが全員に届く。楽観適用したものと食い違う場合はリコンサイル
-    NET.onMissDecl(function(absSeat, beat, reason) {
-      const localSeat = toLocal(absSeat);
-      const key = beat + ":" + localSeat;
-      // すでに同一beat:seatのミスを処理済みなら重複適用しない（楽観適用と一致した場合）
-      if (G._missApplied && G._missApplied.has(key)) return;
-      // 別人のミスがサーバーから届いた場合（楽観適用した自分のミスを巻き戻す必要あり）:
-      // 自分が既にinterludeに入っていて別beatのリコンサイルが必要なケースを検出する
-      const myKey = beat + ":0"; // 自分のローカル席は常に0
-      if (G._lastMissKey === myKey && localSeat !== 0) {
-        // 自分のミスを楽観適用済みだが、サーバーは別人を採用 → 自分のミスを取り消して
-        // 別人のミスで上書きする（interlude表示・resumeSeat・ライフ減を再設定）
-        G._lastMissKey = null; // 重複防止キーをリセットして下の handleMiss を通す
-        // ライフを +1 して楽観適用分を戻す（死亡判定も取り消し）
-        G.lives[0] = Math.min(3, G.lives[0] + 1);
-        if (G.chars[0] && G.chars[0].kind === "cpu") {
-          // CPU化を戻す（まだ生きていた）
-          G.chars[0].kind = "human";
-          if (!G.humanSeats.includes(0)) G.humanSeats.push(0);
-        }
-      }
-      handleMiss(localSeat, reason || "反応できなかった…（時間切れ）", beat);
-    });
-
-    // フェーズ3: 試合終了の再配布（自分が送ったものも返ってくる）
-    NET.onMatchEnd(function(winner) {
-      if (G.mode === "gameover") return; // すでに終了済みなら無視
-      if (G.mode === "play" || G.mode === "interlude" || G.mode === "intro") {
-        const reason = winner >= 0
-          ? seatDisplayName(toLocal(winner)) + " の勝ち！"
-          : "引き分け…";
-        gameOver(reason);
-      }
-      // 試合メンバー外で待機中だった場合: 待機テキストを通常に戻す
-      if (!G._memberOfMatch) {
-        G._memberOfMatch = true;
-        if (G.mode === "intro" && round && !round.event) {
-          // updateWaitingText は WSモードなので roster が来た時に更新されるが
-          // match_end 直後は roster が届く前に文言が stale になるため暫定で更新する
-          G.introText = "参加待ち…";
-          G.introSub = "次の試合から参加できます";
-        }
-      }
-      // inProgress フラグを折る
-      NET.inProgress = false;
-    });
+    // 試合中の各メッセージ（start/input/resume/leave/miss_decl/match_end）の
+    // コールバックを登録する。観戦フローもライブ合流後に同じ経路を使うため共有する
+    registerMatchCallbacks();
 
     if (NET.wsMode) {
       // WSモード: 全員が ready を送ってサーバーの start を待つ（席0もそれ以外も同じ）。
@@ -806,6 +883,8 @@ function seatDisplayName(localSeat) {
 // ---------- オンライン: ミス処理（ライフ制） ----------
 // 自分のミスはここを必ず通す（1人用は従来どおり即gameOver）
 function reportSelfMiss(reason) {
+  // 観戦中は自分の判定・申告を一切行わない（当事者ではない）
+  if (G.spectating) return;
   if (!G.online) {
     gameOver(reason);
     return;
@@ -919,9 +998,285 @@ function handleResume(t0Wall, actorAbs, livesFromMsg) {
   }
 
   G.mode = "intro";
-  const _resumeNowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
-  const t0Local = audioCtx.currentTime + (t0Wall - _resumeNowMs) / 1000;
+  // t0Wall はサーバー時刻(ms)。リプレイ中は凍結アンカー基準で仮想座標に変換し、
+  // 前セグメントの vnow と連続させる（serverMsToLocal がリプレイ判定を内包する）。
+  // 通常時は従来どおり現在時刻基準
+  const t0Local = serverMsToLocal(t0Wall);
   armRound(t0Local, toLocal(actorAbs));
+}
+
+// ---------- 観戦（spectate）: 記録の高速リプレイ → ライブ合流 ----------
+// spectate_init で受け取った記録（start を先頭に input/miss_decl/resume）を、
+// 加速した仮想時刻で既存の update()/handleRemoteInput/handleMiss/handleResume を
+// そのまま回して決定論リプレイする。仮想時刻が現在のサーバー同期時刻に追いついたら
+// ライブ描画へ移行する（以降は通常のWS中継が今までどおり適用される）。
+//
+// 決定論の核心: リプレイ専用の進行ロジックは書かない。既存の進行コードを
+// gameNow()=仮想時刻で回すだけ。乱数（NET.rng）の消費順序が実試合と一致する。
+
+// サーバー時刻(ms) → ローカル座標(秒)。リプレイ中は凍結アンカー基準で変換し、
+// vnow・round.t0・resume の t0 を同じ座標に揃える。通常時は現在時刻基準。
+function serverMsToLocal(ms) {
+  if (SPEC.replaying) return replayServerMsToLocal(ms);
+  const nowMs = NET.wsMode ? NET.serverNowMs() : Date.now();
+  return audioCtx.currentTime + (ms - nowMs) / 1000;
+}
+
+// 観戦フローの入口（タイトルの「観戦する」ボタン）。当事者にはならない。
+// 接続を確認し、試合中の各コールバックと spectate_init コールバックを登録して
+// spectate_req を送る。サーバーが記録を返したら startSpectate が走る。
+async function startSpectateFlow() {
+  if (!G.online || !NET.wsMode) return;
+  playUiStart();
+  try {
+    await initAudio();
+  } catch (e) { /* デコード失敗は無視（音は出ないが観戦は可能） */ }
+  if (audioCtx && audioCtx.state !== "running") audioCtx.resume().catch(function() {});
+
+  G.mode = "intro";
+  G.introText = "観戦の準備中…";
+  G.introSub = "";
+  G.spectating = false; // spectate_init が届くまではまだ観戦確定でない
+
+  NET.ensureConnected();
+  registerMatchCallbacks();          // ライブ合流後に使う共通コールバック
+  NET.onSpectateInit(startSpectate); // 記録が届いたらリプレイ開始
+  // 接続直後は送信が握り潰されうるので、届くまで少し粘って再送する
+  NET.sendSpectateReq();
+  let tries = 0;
+  const timer = setInterval(function() {
+    tries++;
+    if (G.spectating || G.mode !== "intro" || tries > 10) {
+      clearInterval(timer);
+      return;
+    }
+    NET.sendSpectateReq();
+  }, 400);
+}
+
+// spectate_init を受けたときの入口。events[0] は start。
+function startSpectate(events) {
+  // 試合外（空配列）なら観戦対象なし。待機画面へ戻す
+  if (!Array.isArray(events) || events.length === 0) {
+    G.spectating = false;
+    SPEC.replaying = false;
+    SPEC.muted = false;
+    NET.inProgress = false;
+    G.introText = "いま観戦できる試合はありません";
+    G.introSub = "";
+    // 通常の待機フローに戻す（お辞儀待ち）
+    startRound();
+    return;
+  }
+  const startMsg = events[0];
+  if (!startMsg || startMsg.type !== "start") return;
+  // すでに観戦中なら二重開始しない
+  if (G.spectating) return;
+
+  // 観戦モードへ。自分の入力・判定・申告は一切通さない（全席リモート/CPU扱い）。
+  G.spectating = true;
+  G.online = true;
+  G.difficulty = "normal";
+  G.diff = DIFFICULTIES.normal;
+  G.mode = "intro";
+  G.introText = "";
+  G.introSub = "";
+  G.onlineWaiting = false;
+  G.score = 0;
+  G.lives = [3, 3, 3, 3];
+  G.missInfo = "";
+  G.missReason = "";
+  G.waitNote = "";
+  G._lastMissKey = null;
+  G._missApplied = new Set();
+  G.popups = [];
+
+  // round を実試合と同じ形で初期化する（startRound と同一の初期値）
+  round = {
+    t0: 0,
+    interval: 60 / G.diff.bpm,
+    beats: 0,
+    consec: [0, 0, 0, 0],
+    phaseT: 0,
+    pendingKeys: null,
+    earlyInput: null,
+    event: null,
+    awaitingClock: false,
+    beatCounter: 0,
+    stallReportedBeat: -1,
+  };
+
+  // 仮想時刻を有効化してミュート開始
+  SPEC.replaying = true;
+  SPEC.muted = true;
+  // 残りの記録（start を除く）を適用待ちキューへ
+  SPEC.queue = events.slice(1);
+
+  // net.js の start 受信ハンドラは通さないので、PRNG を記録の cpuSeed で
+  // 明示的に初期化する（CPU挙動の決定論リプレイに必須）。t0Server も揃える
+  NET.cpuSeed = startMsg.cpuSeed;
+  NET._rng = makePRNG(startMsg.cpuSeed);
+  NET.t0Server = startMsg.t0;
+
+  // 凍結アンカーを確定する（onStart / handleResume / serverMsToLocal がこれ基準で
+  // サーバーms→仮想座標を変換する）。ここを起点に全セグメントの t0 が揃う
+  SPEC.anchorAudio = audioCtx ? audioCtx.currentTime : 0;
+  SPEC.anchorServerMs = NET.wsMode ? NET.serverNowMs() : Date.now();
+
+  // start を既存の onStart 経路に通してラウンドを組み立てる。
+  // これで G.players・G.humanSeats・cpuSeed(NET.rng) が実試合と同一に初期化され、
+  // armRound により round.event（最初の point）が仮想時刻座標で置かれる。
+  if (NET._onStartCb) NET._onStartCb(startMsg);
+
+  // armRound が置いた round.t0（音声時計座標）を仮想時刻の起点にする。
+  // ここから update() を速回しして FIRST_BEAT 分のイントロも含めて再生する。
+  SPEC.vnow = (round && round.t0) ? round.t0 : (audioCtx ? audioCtx.currentTime : 0);
+  SPEC.targetNow = audioCtx ? audioCtx.currentTime : 0;
+}
+
+// 観戦を解いて通常状態に戻す（match_end・切断時）
+function exitSpectate() {
+  G.spectating = false;
+  SPEC.replaying = false;
+  SPEC.muted = false;
+  SPEC.queue = [];
+}
+
+// タイトルのスタートボタン（Space/タップ）の分岐。オンラインで試合中なら観戦、
+// それ以外は従来どおりお辞儀（startRound）。ラベルは render.js の drawTitle と揃える
+function startButtonAction() {
+  if (G.online && NET.wsMode && NET.connected && NET.inProgress) {
+    startSpectateFlow();
+  } else {
+    startRound();
+  }
+}
+
+// 次に適用すべき記録イベントの「発生時刻（仮想時刻座標・秒）」を返す。
+// input/miss_decl は beat 番号のみ（時刻は round.event が該当 beat に達したとき）。
+// resume は t0(ms) を持つのでセグメント境界として座標変換して使う。
+function nextReplayEventTime() {
+  const e = SPEC.queue[0];
+  if (!e) return Infinity;
+  if (e.type === "resume") {
+    // resume の t0 は「miss 後の再開時刻」。そのセグメントの armRound 起点になる。
+    // ここに vnow を合わせてから適用する
+    return serverMsToLocal(e.t0);
+  }
+  // input / miss_decl は現在のセグメント内。round.event が該当 beat に到達した
+  // 時点で適用する（＝いま適用可能なら現在時刻扱い）
+  return SPEC.vnow;
+}
+
+// キュー先頭の記録イベントを1件適用する。live と同じコールバック経路を通す。
+function applyReplayEvent(e) {
+  if (e.type === "input") {
+    // handleRemoteInput は「相手タブの入力」を beat で照合して適用する。
+    // net.js の受信変換（絶対席→ローカル席）と同じ変換をここで行う。
+    // 自分自身のエコー（seat===mySeat）も観戦では適用する（全席リモート扱い）
+    const localSeat = toLocal(e.seat);
+    const localTargets = (e.targets || []).map(toLocal);
+    handleRemoteInput(e.beat, localSeat, e.action, localTargets, e.result, e.reason);
+  } else if (e.type === "miss_decl") {
+    const localSeat = toLocal(e.seat);
+    handleMiss(localSeat, e.reason || "時間切れ", e.beat);
+  } else if (e.type === "resume") {
+    // handleResume は interlude 中のみ効く。直前の miss_decl で interlude に
+    // 入っているはず。actor は絶対席。lives も付いてくる
+    handleResume(e.t0, e.actor, e.lives);
+  }
+}
+
+// 毎フレーム呼ぶ。仮想時刻を速く進めながら update() を回し、記録を順に適用する。
+// 追いついたらライブへ移行する。
+function driveReplay() {
+  if (!SPEC.replaying || !round) return;
+
+  // 1フレームで進める仮想時間の総量（実時間よりずっと速く進めてよい）。
+  // 1回の update() の刻みは小さく保ち、拍やイベントの取りこぼしを防ぐ。
+  const STEP = 0.02;               // 1刻み=20ms相当（十分細かい）
+  const MAX_ADVANCE = 4.0;         // 1フレームで最大4秒ぶん進める
+  let advanced = 0;
+
+  while (advanced < MAX_ADVANCE) {
+    // いま適用できる記録イベントを先に処理する
+    // （input/miss_decl は現在セグメント内なので即、resume は境界時刻まで進めてから）
+    let guard = 0;
+    while (SPEC.queue.length > 0 && guard++ < 64) {
+      const e = SPEC.queue[0];
+      if (e.type === "resume") {
+        const rt = serverMsToLocal(e.t0);
+        // resume 時刻まで vnow を進めてから適用する（セグメント境界）
+        if (SPEC.vnow < rt) {
+          // まだ境界に達していない: このセグメントの残りを回してから来る
+          break;
+        }
+        SPEC.queue.shift();
+        applyReplayEvent(e);
+      } else {
+        // input / miss_decl: 現在の round.event が該当 beat のときだけ適用できる。
+        // まだ手前の beat なら update() を回して round.event を進める必要がある。
+        if (round.event && round.event.beat === e.beat) {
+          SPEC.queue.shift();
+          applyReplayEvent(e);
+        } else if (round.event && round.event.beat > e.beat) {
+          // 取りこぼし（通常は起きない）: 古い記録は捨てて先へ
+          SPEC.queue.shift();
+        } else {
+          break; // round.event がまだ手前 → update() で進める
+        }
+      }
+    }
+
+    // 追いつき判定: 仮想時刻が「今」に達したらライブへ
+    if (SPEC.vnow >= audioCtx.currentTime) {
+      finishSpectateReplay();
+      return;
+    }
+
+    // 仮想時刻を1刻み進めて update() を回す（既存の進行ロジックがそのまま動く）
+    SPEC.vnow += STEP;
+    advanced += STEP;
+    update();
+
+    // リプレイ中に試合が終わっていたら（記録が勝敗まで含む場合）抜ける
+    if (G.mode === "gameover") {
+      SPEC.replaying = false;
+      SPEC.muted = false;
+      return;
+    }
+  }
+}
+
+// リプレイを終えてライブ観戦へ移行する。以降は通常の音声時計と
+// 通常のWS中継（input/miss_decl/resume/match_end）で描画が続く。
+function finishSpectateReplay() {
+  // 追いつき時点で未適用の記録が残っていたら（ごく最近の入室）先に全部適用する。
+  // これらは入室時点までの実イベントで、ライブ中継では二度と届かないため取りこぼせない。
+  // まだリプレイ座標で解釈するので muted のまま適用し、その後にライブへ切り替える
+  let guard = 0;
+  while (SPEC.queue.length > 0 && guard++ < 256) {
+    const e = SPEC.queue[0];
+    if (e.type === "resume") {
+      // resume の t0 まで round を進めてから適用する（境界を飛ばさない）
+      const rt = serverMsToLocal(e.t0);
+      if (round && round.event && SPEC.vnow < rt) { SPEC.vnow = rt; }
+      SPEC.queue.shift();
+      applyReplayEvent(e);
+    } else if (round && round.event && round.event.beat < e.beat) {
+      // まだ手前の beat: 仮想時刻を進めて round.event を該当 beat まで動かす
+      SPEC.vnow += round.interval;
+      update();
+    } else {
+      SPEC.queue.shift();
+      applyReplayEvent(e);
+    }
+  }
+  SPEC.replaying = false;
+  SPEC.muted = false;
+  SPEC.queue = [];
+  // G.now / gameNow() は以降 audioCtx.currentTime を返す。round.event.t は
+  // 音声時計座標のままなので、そのままライブ進行に連続する。
 }
 
 // 拍が進むごとに呼ぶ。RAMP_EVERY拍ごとにテンポを上げる（上限なし）
@@ -930,13 +1285,14 @@ function maybeRamp() {
   if (round.beats % RAMP_EVERY === 0) {
     round.interval *= RAMP_FACTOR;
     G.bpmNow = Math.round(60 / round.interval);
-    G.speedupAt = audioCtx.currentTime;
+    G.speedupAt = gameNow();
     if (FX.speedupFx) playSpeedup(audioCtx.currentTime);
   }
 }
 
 // テンポアップのジングル（上昇2音）
 function playSpeedup(t) {
+  if (audioMuted()) return; // 観戦リプレイ中は鳴らさない
   for (let i = 0; i < 2; i++) {
     const osc = audioCtx.createOscillator();
     osc.type = "triangle";
@@ -962,7 +1318,7 @@ function addPopup(actor, gain) {
     color: gain >= 2 ? "#ffd95e" : "#ffffff",
     x: pos.x,
     y: pos.y,
-    t0: audioCtx.currentTime,
+    t0: gameNow(),
   });
   if (G.popups.length > 12) G.popups.shift();
 }
@@ -1016,7 +1372,7 @@ function advanceEvent(nextEvent) {
 // actor が targets を指差す（入力検証は済んでいる前提）
 function doPoint(actor, targets) {
   const ev = round.event;
-  const now = audioCtx.currentTime;
+  const now = gameNow();
   playVoice("saburo", G.chars[actor].pitch);
   G.chars[actor].anim = { type: "point", targets, start: now, until: now + round.interval * 0.8 };
 
@@ -1201,7 +1557,7 @@ function handleRemoteInput(beat, localSeat, action, localTargets, result, reason
       playVoice("haihai", G.chars[localSeat].pitch);
       G.chars[localSeat].anim = {
         type: "haihai",
-        start: audioCtx.currentTime,
+        start: gameNow(),
         until: ev.t + round.interval * 0.9,
       };
       // 全人間席が揃ったか確認（update側の playerDone と整合させる）
@@ -1238,7 +1594,7 @@ function update() {
     if (audioCtx.state === "running") armRound();
     else return;
   }
-  const now = audioCtx.currentTime;
+  const now = gameNow();
   const ev = round.event;
   // オンラインのゲストはホストの start メッセージ（armRound）が来るまでイベントが無い
   if (!ev) return;
@@ -1286,7 +1642,8 @@ function update() {
       // より長い時点で送る。100BPMでは 0.6*0.8+0.5=0.98秒→約1.5秒後が妥当
       // stall_threshold = 拍間隔 * MIN_RESPONSE_GRACE_RATIO + STALL_MARGIN（最低2.5秒）
       const stallThreshold = Math.max(2.5, round.interval * MIN_RESPONSE_GRACE_RATIO + STALL_MARGIN);
-      if (now > ev.t + stallThreshold && round.stallReportedBeat !== ev.beat) {
+      // 観戦中は申告しない（当事者ではない）。リプレイは記録の入力で進む
+      if (!G.spectating && now > ev.t + stallThreshold && round.stallReportedBeat !== ev.beat) {
         round.stallReportedBeat = ev.beat;
         NET.sendStallReport(ev.beat, toAbs(ev.actor));
       }
@@ -1320,8 +1677,9 @@ function update() {
       if (G.online && !selfPending) {
         // リモート待ち: 判定はしないが、長引いたら表示だけ出す
         if (now > ev.t + 1.5) G.waitNote = "ハイハイの応答待ち…";
-        // フェーズ3: 2.5秒超で未応答の人間actor それぞれに stall_report（1beat1回）
-        if (now > ev.t + 2.5 && round.stallReportedBeat !== ev.beat) {
+        // フェーズ3: 2.5秒超で未応答の人間actor それぞれに stall_report（1beat1回）。
+        // 観戦中は申告しない（当事者ではない。リプレイは記録の入力で進む）
+        if (!G.spectating && now > ev.t + 2.5 && round.stallReportedBeat !== ev.beat) {
           round.stallReportedBeat = ev.beat;
           for (const a of ev.actors) {
             if (G.chars[a] && G.chars[a].kind === "human") {
@@ -1358,9 +1716,10 @@ function loop(ts) {
   // メニュー操作のつもりが勝手にゲームが始まってしまう
   const inGame = G.mode === "intro" || G.mode === "play";
   if (audioCtx) {
-    G.now = audioCtx.currentTime; // アニメ進行は音声クロック基準で統一
-    // iOS既知バグの見張り: stateがrunningのまま時計が0.4秒以上進まないなら壊れている
-    if (inGame) {
+    G.now = gameNow(); // アニメ進行はゲーム時刻基準（リプレイ中は仮想時刻）
+    // iOS既知バグの見張り: stateがrunningのまま時計が0.4秒以上進まないなら壊れている。
+    // 観戦リプレイ中は仮想時刻で回すので音声時計の見張りは休止する
+    if (inGame && !SPEC.replaying) {
       if (G.now !== lastClockValue) {
         lastClockValue = G.now;
         lastClockMoveTs = ts;
@@ -1372,9 +1731,15 @@ function loop(ts) {
       G.clockStuck = false;
     }
   }
-  // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる
-  G.audioStalled = !!(audioCtx && inGame && (audioCtx.state !== "running" || G.clockStuck));
-  update();
+  // 音声時計が止まっていたら進行も止まる。タップ促しを表示して復帰させる。
+  // 観戦リプレイ中は仮想時刻で回すので音声停止扱いにしない
+  G.audioStalled = !SPEC.replaying &&
+    !!(audioCtx && inGame && (audioCtx.state !== "running" || G.clockStuck));
+  if (SPEC.replaying) {
+    driveReplay(); // 仮想時刻を速回しして記録を再生・現在に追いついたらライブへ
+  } else {
+    update();
+  }
   render(G, ts / 1000);
   requestAnimationFrame(loop);
 }
@@ -1428,6 +1793,7 @@ function inRemoteTurnGap(ev) {
 }
 
 function handlePointInput(target, t) {
+  if (G.spectating) return; // 観戦中は入力を受け付けない
   if (!round || !round.event) return; // 開始時刻の確定前は無視
   // オンライン時、死亡後（CPU代走中）の自分の入力は受け付けない
   if (G.online && G.chars[0] && G.chars[0].kind === "cpu") return;
@@ -1457,6 +1823,7 @@ function handlePointInput(target, t) {
 }
 
 function handleHaihaiInput(t) {
+  if (G.spectating) return; // 観戦中は入力を受け付けない
   if (!round || !round.event) return; // 開始時刻の確定前は無視
   // オンライン時、死亡後（CPU代走中）の自分の入力は受け付けない
   if (G.online && G.chars[0] && G.chars[0].kind === "cpu") return;
@@ -1482,8 +1849,14 @@ window.addEventListener("keydown", (e) => {
     if (key === "r" && !G.online) { openRanking(); return; }
     if (key === " ") {
       e.preventDefault();
-      startRound();
+      startButtonAction();
     }
+    return;
+  }
+
+  // 観戦中はゲーム入力を受け付けない。T でタイトルへ退出できる
+  if (G.spectating) {
+    if (key === "t") { exitSpectate(); goTitle(); }
     return;
   }
 
@@ -1608,11 +1981,17 @@ function closeHowto() {
 }
 
 function handleTapUI(pos) {
+  // 観戦中はどこをタップしてもタイトルへ退出（ゲーム入力には流さない）
+  if (G.spectating) {
+    exitSpectate();
+    goTitle();
+    return true;
+  }
   if (G.mode === "title") {
     const s = TITLE_UI.start;
     const h = TITLE_UI.howto;
     const rk = TITLE_UI.ranking;
-    if (inRect(pos, s.x, s.y, s.w, s.h)) startRound();
+    if (inRect(pos, s.x, s.y, s.w, s.h)) startButtonAction();
     else if (inRect(pos, h.x, h.y, h.w, h.h)) openHowto();
     else if (rk && !G.online && inRect(pos, rk.x, rk.y, rk.w, rk.h)) openRanking();
     return true;
