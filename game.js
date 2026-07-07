@@ -344,6 +344,7 @@ async function startRound() {
   G.missReason = "";
   G.starterName = "";
   G._lastMissKey = null;
+  G._missApplied = new Set();
 
   round = {
     t0: 0,
@@ -454,7 +455,7 @@ async function startRound() {
       const localSeat = toLocal(absSeat);
       const key = beat + ":" + localSeat;
       // すでに同一beat:seatのミスを処理済みなら重複適用しない（楽観適用と一致した場合）
-      if (G._lastMissKey === key) return;
+      if (G._missApplied && G._missApplied.has(key)) return;
       // 別人のミスがサーバーから届いた場合（楽観適用した自分のミスを巻き戻す必要あり）:
       // 自分が既にinterludeに入っていて別beatのリコンサイルが必要なケースを検出する
       const myKey = beat + ":0"; // 自分のローカル席は常に0
@@ -813,7 +814,11 @@ function handleMiss(seat, reason, beat) {
   const ev = round && round.event;
   if (beat === undefined) beat = ev ? ev.beat : -1;
   const key = beat + ":" + seat;
-  if (G._lastMissKey === key) return; // 同一ミスの重複処理防止
+  // 同一ミスの重複処理防止。単一キーだと「楽観適用→別beatの中継→自分のbeatの中継」の
+  // 順で二重適用が起きるため、セグメント内の適用済みキーをすべて覚える
+  if (!G._missApplied) G._missApplied = new Set();
+  if (G._missApplied.has(key)) return;
+  G._missApplied.add(key);
   G._lastMissKey = key;
 
   playBuzzer();
@@ -876,6 +881,10 @@ function handleResume(t0Wall, actorAbs, livesFromMsg) {
   round.consec = [0, 0, 0, 0];
   round.pendingKeys = null;
   G.resumeSeat = null;
+  // 再開で拍番号が0から振り直されるため、ミスの適用済みキーをクリアする。
+  // 残すと前セグメントと同じ 拍:席 のミスが重複扱いで握り潰される（フリーズ）
+  G._lastMissKey = null;
+  if (G._missApplied) G._missApplied.clear();
 
   // フェーズ3: サーバーから lives が返ってきた場合はそれを正値として採用する。
   // 絶対席順 → ローカル席順に変換して G.lives に適用する

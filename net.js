@@ -515,15 +515,9 @@ const NET = {
         // ゲーム中・interlude中だったなら resume_req を送って状態を再同期する
         if (typeof G !== "undefined") {
           if (G.online && (G.mode === "play" || G.mode === "interlude")) {
-            // ライフを絶対席順に並べてresume_reqで送信し、サーバーから現在の状態を受け取る
-            const livesAbs = [0, 0, 0, 0];
-            if (typeof toAbs === "function") {
-              for (let local = 0; local < 4; local++) {
-                livesAbs[toAbs(local)] = (G.lives && G.lives[local]) || 0;
-              }
-            }
-            // resume_req は last_miss_seat チェックがあるため通らない場合がある。
-            // 代わりに ready を送り直し、次の試合から参加する（フォールバック）
+            // 進行中だった試合への復帰（resume）は行わない（既知の割り切り）。
+            // ready を送り直して次の試合から参加する。手元の試合はローカルで
+            // 完走してgameOverから通常フローに戻る
             this.sendReady("normal");
             // 「接続中」テキストを更新
             if (G.mode === "interlude") {
